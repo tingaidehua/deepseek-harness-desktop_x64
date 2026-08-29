@@ -1,0 +1,19 @@
+{
+  "name": "dsh-desktop-control",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "exports": "./index.js",
+  "files": [
+    "cordis.patch.yml",
+    "index.js"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

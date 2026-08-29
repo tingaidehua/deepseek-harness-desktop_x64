@@ -463,6 +463,14 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
     if has_owned_process() {
         return;
     }
+    // DSH 内置控制插件在 Desktop 崩溃后重新拉起外壳时显式请求接管仍健康的
+    // Harness。该路径不能按普通启动清扫孤儿，否则负责恢复的 DSH 会被新外壳
+    // 杀掉。PID 与监听端口仍须和落盘记录精确一致，接管失败再走常规清扫。
+    if std::env::var_os("DSH_DESKTOP_RECOVERY").as_deref() == Some(std::ffi::OsStr::new("1"))
+        && adopt_recovery_harness(app_handle)
+    {
+        return;
+    }
     // 先按命令行路径清扫所有从本应用 dsh 安装目录启动的孤儿 Harness 实例：
     // 标记文件只记录最近一次会话的 PID，应用多次崩溃/强杀会遗留更早的孤儿
     // （端口一路漂移 3081/3082/…），它们持续占用 dependencies/dsh 目录的文件
@@ -497,6 +505,82 @@ pub fn sweep_orphan_harness(app_handle: &tauri::AppHandle) {
     let _ = fs::remove_file(&pid_file);
 }
 
+/// 接管崩溃前由本应用创建、仍在监听记录端口的 Harness 进程。
+fn adopt_recovery_harness(app_handle: &tauri::AppHandle) -> bool {
+    let Ok(text) = fs::read_to_string(harness_pid_path(app_handle)) else {
+        return false;
+    };
+    let mut lines = text.lines();
+    let (Some(pid), Some(port)) = (
+        lines
+            .next()
+            .and_then(|line| line.trim().parse::<u32>().ok()),
+        lines
+            .next()
+            .and_then(|line| line.trim().parse::<u16>().ok()),
+    ) else {
+        return false;
+    };
+    if port_owner_pid(port) != Some(pid) {
+        return false;
+    }
+    if let Ok(recovery_url) = std::env::var("DSH_DESKTOP_RECOVERY_URL") {
+        if let Err(error) = utils::restore_authenticated_service_url(&recovery_url, port) {
+            log::warn!("{error}");
+            return false;
+        }
+        std::env::remove_var("DSH_DESKTOP_RECOVERY_URL");
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        let handle = unsafe {
+            OpenProcess(
+                SYNCHRONIZE_ACCESS | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            log::warn!("HARNESS_RECOVERY_ADOPT_OPEN: cannot open process {pid}");
+            return false;
+        }
+        let handle_value = handle as usize;
+        set_owned_process_with_handle(pid, handle_value);
+        std::thread::spawn(move || unsafe {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+            WaitForSingleObject(handle_value as _, INFINITE);
+            if let Some(owned) = on_owned_process_exit(pid) {
+                CloseHandle(owned.handle as _);
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        set_owned_process(pid);
+        std::thread::spawn(move || loop {
+            let alive = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !alive {
+                let _ = on_owned_process_exit(pid);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        });
+    }
+    status::set_status(status::Status::Running);
+    log::info!("Adopted Harness process {pid} on port {port} after Desktop recovery");
+    true
+}
+
 /// 占用指定端口的进程 PID（LISTENING 状态）。
 /// - Windows：`netstat -ano` 解析；
 /// - Unix：`lsof -ti tcp:<port>`，不可用时返回 None。
@@ -513,22 +597,7 @@ fn port_owner_pid(port: u16) -> Option<u32> {
             .creation_flags(0x08000000)
             .output()
             .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let needle = format!(":{port} ");
-        for line in text.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 5 || fields[0] != "TCP" {
-                continue;
-            }
-            // 本地地址列（如 127.0.0.1:3080 / [::1]:3080）以 :<port> 结尾
-            if !fields[1].ends_with(&needle) {
-                continue;
-            }
-            if fields[3] == "LISTENING" {
-                return fields[4].parse().ok();
-            }
-        }
-        None
+        netstat_owner_pid(&String::from_utf8_lossy(&output.stdout), port)
     }
     #[cfg(not(windows))]
     {
@@ -545,6 +614,23 @@ fn port_owner_pid(port: u16) -> Option<u32> {
             .next()
             .and_then(|l| l.trim().parse().ok())
     }
+}
+
+/// 从 Windows `netstat -ano` 输出提取指定监听端口的 PID。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn netstat_owner_pid(text: &str, port: u16) -> Option<u32> {
+    let needle = format!(":{port}");
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 || fields[0] != "TCP" {
+            continue;
+        }
+        // split_whitespace 已移除地址列后的空格，只匹配地址本身的端口后缀。
+        if fields[1].ends_with(&needle) && fields[3] == "LISTENING" {
+            return fields[4].parse().ok();
+        }
+    }
+    None
 }
 
 /// Windows RedirectionGuard（错误码 448 = ERROR_UNTRUSTED_MOUNT_POINT）逃逸重拉的标记路径。
@@ -790,6 +876,28 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     envs.insert("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string());
     envs.insert("NO_COLOR".to_string(), "1".to_string());
     envs.insert("DSH_WEB_PORT".to_string(), setting.port.to_string());
+    envs.insert(
+        "DSH_DESKTOP_CONTROL_ENDPOINT_FILE".to_string(),
+        crate::service::control::endpoint_path(&app_handle)
+            .to_string_lossy()
+            .into_owned(),
+    );
+    envs.insert(
+        "DSH_DESKTOP_CONTROL_TRACE_FILE".to_string(),
+        crate::service::control::trace_path(&app_handle)
+            .to_string_lossy()
+            .into_owned(),
+    );
+    envs.insert(
+        "DSH_DESKTOP_HARNESS_PID_FILE".to_string(),
+        harness_pid_path(&app_handle).to_string_lossy().into_owned(),
+    );
+    if let Ok(executable) = std::env::current_exe() {
+        envs.insert(
+            "DSH_DESKTOP_EXECUTABLE".to_string(),
+            executable.to_string_lossy().into_owned(),
+        );
+    }
     // 把服务实际使用的 node 路径显式交给子进程（pnpm/dsh shim 的 DSH_NODE
     // 优先）：市场（dsh-market）等子进程经 PATH 解析 node 可能与桌面端预检
     // 不一致（相对 PATH 条目 / junction / 子进程 PATH 布局差异），导致 pnpm
@@ -1480,6 +1588,14 @@ mod tests {
         assert!(parse_ps_line("PID COMMAND").is_none());
         // 空行 → 跳过
         assert!(parse_ps_line("").is_none());
+    }
+
+    #[test]
+    fn netstat_owner_matches_split_address_without_trailing_space() {
+        let output = "  TCP    127.0.0.1:3082    0.0.0.0:0    LISTENING    55652\r\n\
+                      TCP    127.0.0.1:30820   0.0.0.0:0    LISTENING    42\r\n";
+        assert_eq!(netstat_owner_pid(output, 3082), Some(55652));
+        assert_eq!(netstat_owner_pid(output, 3083), None);
     }
 
     /// 命令行匹配：argv 整词精确等于 dsh 入口路径才算本应用服务实例。

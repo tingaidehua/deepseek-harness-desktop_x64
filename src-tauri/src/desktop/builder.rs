@@ -30,7 +30,7 @@ use crate::utils::show_main_window;
 /// `app-region: drag` 才能让触摸输入进入窗口非客户区拖拽。ElasticOverscroll
 /// 会抢走触摸手势，因此必须同时禁用。Wry 的默认安全功能保持启用。
 #[cfg(windows)]
-const WINDOWS_DRAG_BROWSER_ARGS: &str = r#"--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI --host-resolver-rules="MAP dsh.tauri.localhost 127.0.0.1""#;
+const WINDOWS_DRAG_BROWSER_ARGS: &str = r#"--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI --host-resolver-rules="MAP desktop.tauri.localhost 127.0.0.1, MAP dsh.tauri.localhost 127.0.0.1""#;
 
 #[cfg(windows)]
 fn windows_drag_browser_args() -> &'static str {
@@ -623,6 +623,9 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             #[cfg(target_os = "macos")]
             install_macos_menu(&app_handle)?;
             tray(&app_handle)?;
+            if let Err(error) = crate::service::control::start(app_handle.clone()) {
+                log::error!("Desktop control plane unavailable: {error}");
+            }
             setup(app_handle.clone());
             Ok(())
         })

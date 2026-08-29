@@ -34,6 +34,28 @@ pub(crate) fn authenticated_service_url(port: u16) -> Option<String> {
     (parsed.port_or_known_default() == Some(port)).then_some(url)
 }
 
+/// 接收独立 Harness 控制插件在恢复外壳时重新签发的浏览器认证地址。
+pub(crate) fn restore_authenticated_service_url(candidate: &str, port: u16) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(candidate)
+        .map_err(|error| format!("HARNESS_RECOVERY_URL_PARSE: {error}"))?;
+    let loopback = parsed.host_str().is_some_and(|host| {
+        host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
+    let has_token = parsed
+        .query_pairs()
+        .any(|(key, value)| key == "token" && !value.is_empty());
+    if !loopback || parsed.port_or_known_default() != Some(port) || !has_token {
+        return Err(
+            "HARNESS_RECOVERY_URL_INVALID: URL must contain a token for the owned loopback port"
+                .to_string(),
+        );
+    }
+    *authenticated_url_slot()
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(candidate.to_string());
+    Ok(())
+}
+
 /// 返回供 Tauri iframe 使用的同站点认证地址。
 ///
 /// 官方 DSH 认证 cookie 是 `HttpOnly; SameSite=Strict`。将回环 IP 仅在 WebView
@@ -325,6 +347,23 @@ mod tests {
             authenticated_webview_url(4567).as_deref(),
             Some("http://dsh.tauri.localhost:4567/?token=secret-value")
         );
+        clear_authenticated_service_url();
+    }
+
+    #[test]
+    fn recovery_url_requires_token_and_exact_loopback_port() {
+        clear_authenticated_service_url();
+        restore_authenticated_service_url("http://127.0.0.1:4567/?token=reissued", 4567)
+            .expect("accept recovery URL");
+        assert_eq!(
+            authenticated_service_url(4567).as_deref(),
+            Some("http://127.0.0.1:4567/?token=reissued")
+        );
+        assert!(
+            restore_authenticated_service_url("http://example.com:4567/?token=x", 4567).is_err()
+        );
+        assert!(restore_authenticated_service_url("http://127.0.0.1:4568/?token=x", 4567).is_err());
+        assert!(restore_authenticated_service_url("http://127.0.0.1:4567/", 4567).is_err());
         clear_authenticated_service_url();
     }
 

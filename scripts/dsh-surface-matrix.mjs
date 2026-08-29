@@ -1,14 +1,22 @@
 import { readFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import process from 'node:process'
 
 const cdpPort = process.env.DSH_DESKTOP_CDP_PORT || '9337'
 const contracts = JSON.parse(await readFile(new URL('../src-tauri/resources/surface-contracts.json', import.meta.url), 'utf8'))
-const compatibilityRecords = JSON.parse(await readFile(new URL('../src-tauri/resources/core-compatibility.json', import.meta.url), 'utf8'))
 const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json()
-const appTarget = targets.find(item => item.type === 'page' && item.url === 'http://tauri.localhost/')
-if (!appTarget) throw new Error('SURFACE_MATRIX_APP_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
+const appTarget = targets.find(item => item.type === 'page' && (
+  item.url === 'http://tauri.localhost/'
+  || item.url === 'http://desktop.tauri.localhost:1420/'
+  || item.url === 'http://localhost:1420/'
+  || item.url === 'http://127.0.0.1:1420/'
+))
+if (!appTarget)
+  throw new Error('SURFACE_MATRIX_APP_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
 const target = targets.find(item => item.url.startsWith('http://127.0.0.1:') || item.url.startsWith('http://dsh.tauri.localhost:'))
   || targets.find(item => item.type === 'page')
-if (!target) throw new Error('SURFACE_MATRIX_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
+if (!target)
+  throw new Error('SURFACE_MATRIX_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
 
 const socket = new WebSocket(target.webSocketDebuggerUrl)
 const pending = new Map()
@@ -16,11 +24,14 @@ const contexts = []
 let sequence = 0
 socket.addEventListener('message', (event) => {
   const message = JSON.parse(event.data)
-  if (message.method === 'Runtime.executionContextCreated') contexts.push(message.params.context)
-  if (!message.id || !pending.has(message.id)) return
+  if (message.method === 'Runtime.executionContextCreated')
+    contexts.push(message.params.context)
+  if (!message.id || !pending.has(message.id))
+    return
   const operation = pending.get(message.id)
   pending.delete(message.id)
-  if (message.error) operation.reject(new Error(JSON.stringify(message.error)))
+  if (message.error)
+    operation.reject(new Error(JSON.stringify(message.error)))
   else operation.resolve(message.result)
 })
 await new Promise((resolve, reject) => {
@@ -38,7 +49,8 @@ await call('Runtime.enable')
 await new Promise(resolve => setTimeout(resolve, 250))
 const context = contexts.find(item =>
   item.origin.startsWith('http://dsh.tauri.localhost:') || item.origin.startsWith('http://127.0.0.1:'))
-if (!context) throw new Error(`SURFACE_MATRIX_CONTEXT_MISSING: ${JSON.stringify(contexts)}`)
+if (!context)
+  throw new Error(`SURFACE_MATRIX_CONTEXT_MISSING: ${JSON.stringify(contexts)}`)
 
 async function evaluateIn(contextId, expression) {
   const answer = await call('Runtime.evaluate', {
@@ -47,7 +59,8 @@ async function evaluateIn(contextId, expression) {
     awaitPromise: true,
     returnByValue: true,
   })
-  if (answer.exceptionDetails) throw new Error(`SURFACE_MATRIX_EVALUATION: ${answer.exceptionDetails.text}`)
+  if (answer.exceptionDetails)
+    throw new Error(`SURFACE_MATRIX_EVALUATION: ${answer.exceptionDetails.text}`)
   return answer.result.value
 }
 
@@ -62,11 +75,14 @@ async function evaluateApp(expression) {
   let appSequence = 0
   appSocket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data)
-    if (message.method === 'Runtime.executionContextCreated') appContexts.push(message.params.context)
-    if (!message.id || !appPending.has(message.id)) return
+    if (message.method === 'Runtime.executionContextCreated')
+      appContexts.push(message.params.context)
+    if (!message.id || !appPending.has(message.id))
+      return
     const operation = appPending.get(message.id)
     appPending.delete(message.id)
-    if (message.error) operation.reject(new Error(JSON.stringify(message.error)))
+    if (message.error)
+      operation.reject(new Error(JSON.stringify(message.error)))
     else operation.resolve(message.result)
   })
   await new Promise((resolve, reject) => {
@@ -81,7 +97,11 @@ async function evaluateApp(expression) {
   await appCall('Runtime.enable')
   await new Promise(resolve => setTimeout(resolve, 100))
   const appContext = appContexts.find(item =>
-    item.origin === 'http://tauri.localhost' || item.origin.startsWith('tauri://'))
+    item.origin === 'http://tauri.localhost'
+    || item.origin === 'http://desktop.tauri.localhost:1420'
+    || item.origin === 'http://localhost:1420'
+    || item.origin === 'http://127.0.0.1:1420'
+    || item.origin.startsWith('tauri://'))
   if (!appContext)
     throw new Error(`SURFACE_MATRIX_APP_CONTEXT_MISSING: ${JSON.stringify(appContexts)}`)
   const answer = await appCall('Runtime.evaluate', {
@@ -117,6 +137,14 @@ function visibleFailure(text) {
   return contracts.visibleFailurePatterns.find(pattern => lower.includes(pattern.toLowerCase()))
 }
 
+for (const labels of [
+  ['继续', 'Continue'],
+  ['稍后配置', 'Configure later'],
+]) {
+  if (await click(labels))
+    await new Promise(resolve => setTimeout(resolve, 250))
+}
+
 const observedLaunchProtocol = context.origin.startsWith('http://dsh.tauri.localhost:')
   ? 'token-cookie-v1'
   : 'direct-loopback-v1'
@@ -146,6 +174,26 @@ const bootGraph = await evaluate('JSON.stringify(globalThis.__DSH_BOOT__ || {})'
 for (const plugin of contracts.plugins) {
   record(`boot.plugin.${plugin}`, bootGraph.includes(`"${plugin}"`), 'declared in the composed Client boot graph')
 }
+for (const plugin of contracts.hostPlugins || []) {
+  const appData = resolve(diagnostics.corePath, '..', '..', '..')
+  const dshHome = resolve(dirname(diagnostics.profilePath), '..')
+  let recovery
+  let harnessPid
+  try {
+    recovery = JSON.parse(await readFile(resolve(appData, 'control', 'harness-recovery.json'), 'utf8'))
+    harnessPid = Number((await readFile(resolve(dshHome, '.harness.pid'), 'utf8')).split(/\r?\n/)[0])
+  }
+  catch {}
+  const declared = diagnostics.pluginCompatibility.checkedPackages.includes(plugin.id)
+  const live = recovery?.protocol === plugin.probe
+    && Number.isInteger(recovery.pid)
+    && recovery.pid === harnessPid
+  record(
+    `host.plugin.${plugin.id}`,
+    declared && diagnostics.pluginCompatibility.compatible && live,
+    `declared=${declared}; compatible=${diagnostics.pluginCompatibility.compatible}; live=${live}`,
+  )
+}
 
 for (const resource of contracts.resources) {
   const result = await evaluate(`fetch(${JSON.stringify(resource.path)}, { credentials: 'same-origin', cache: 'no-store' })
@@ -167,9 +215,9 @@ for (const surface of contracts.settingsSurfaces) {
   const text = await bodyText()
   const failure = visibleFailure(text)
   const expected = surface.expectedAny.some(value => text.includes(value))
-  record(`settings.${surface.id}`, opened && expected && !failure,
-    !opened ? 'navigation entry missing' : failure ? `visible failure: ${failure}` : `expected content=${expected}`)
-  if (surface.id === 'plugins') pluginText = text
+  record(`settings.${surface.id}`, opened && expected && !failure, !opened ? 'navigation entry missing' : failure ? `visible failure: ${failure}` : `expected content=${expected}`)
+  if (surface.id === 'plugins')
+    pluginText = text
 }
 
 if (coreCompatibility.clientAbi === 'split-client-v1') {
@@ -189,8 +237,7 @@ for (const tab of contracts.sidebarTabs) {
   await new Promise(resolve => setTimeout(resolve, 350))
   const text = await bodyText()
   const failure = visibleFailure(text)
-  record(`sidebar.${tab.id}`, opened && !failure,
-    !opened ? 'tab missing' : failure ? `visible failure: ${failure}` : 'opened without a known failure')
+  record(`sidebar.${tab.id}`, opened && !failure, !opened ? 'tab missing' : failure ? `visible failure: ${failure}` : 'opened without a known failure')
 }
 
 const finalText = await bodyText()
@@ -207,4 +254,5 @@ const report = {
 }
 console.log(JSON.stringify(report, null, 2))
 socket.close()
-if (failed.length > 0) process.exitCode = 1
+if (failed.length > 0)
+  process.exitCode = 1

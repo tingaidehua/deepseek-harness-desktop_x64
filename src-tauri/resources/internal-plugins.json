@@ -1,5 +1,13 @@
 [
   {
+    "id": "dsh-desktop-control",
+    "spec": "local:plugins/dsh-desktop-control",
+    "name": "DSH Desktop Control",
+    "description": "Agent-callable diagnostics, stress testing, tracing, and crash recovery for the Desktop shell",
+    "repoUrl": "",
+    "recommended": true
+  },
+  {
     "id": "dsh-tauri",
     "spec": "dsh-tauri@0.5.2",
     "name": "DSH Tauri",

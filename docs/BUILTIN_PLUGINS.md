@@ -2,7 +2,7 @@
 
 Built-in plugins（内置插件）are plugins bundled with the installed desktop app and treated as part of the application itself. They are declared in `src-tauri/resources/internal-plugins.json`, fetched at build time by `scripts/prebuild.ts` into `src-tauri/resources/internal-plugins/<id>/`, shipped with the installer via `bundle.resources`, and auto-installed (and auto-healed) at service start by `src-tauri/src/service/plugin/internal.rs`.
 
-Examples today: `dsh-tauri`, `dsh-tauri-ui`, `dsh-tauri-worktree`, `dsh-tauri-panel`, and `dsh-tauri-panel-extension`.
+Current built-ins are `dsh-desktop-control`, `dsh-tauri`, `dsh-tauri-ui`, `dsh-tauri-worktree`, `dsh-tauri-panel`, `dsh-tauri-panel-extension`, `dsh-tauri-session`, and `dsh-tauri-rightclick`. `dsh-desktop-control` is a Host plugin running in the independent Harness process, so it is not part of the client boot graph. It calls authoritative Desktop services through an authenticated loopback protocol and retains diagnostics and shell recovery after the shell exits.
 
 ## Built-in vs. normal preset plugin
 

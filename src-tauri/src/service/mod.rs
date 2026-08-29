@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod control;
 pub mod core;
 pub mod core_compatibility;
 pub mod download;

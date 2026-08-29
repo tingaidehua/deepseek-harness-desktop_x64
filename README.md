@@ -67,6 +67,9 @@
 - [DSH Tauri Worktree](https://github.com/dsh-tauri-desk/dsh-tauri-worktree) — 为每个会话创建隔离的 Git Worktree，并支持检出到本地分支或归档放弃
 - [DSH Tauri Panel](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel) — 侧栏外壳、面板协议
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills/MCP 管理与导入技能仓库
+- [DSH Tauri Session](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session) — 归档、搜索、排序、分组和恢复会话
+- [DSH Tauri Rightclick](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — 为会话、工作区、正文、链接和输入框提供上下文操作
+- **DSH Desktop Control** — 向编码 Agent 提供认证诊断、结构化轨迹、并发压测和外壳崩溃恢复；运行在独立 Harness 进程中
 - 更多即将引入的插件...
 
 ## 快速开始
@@ -131,7 +134,7 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 
 Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时提醒下载更新；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
 
-Desktop 会创建 `product-zlzhg` 档案作为干净的产品基线。该档案只叠加官方 `dsh-base` 与 `dsh-web-app`；`service/core_compatibility.rs` 将每个精确测试核心版本映射到明确协议能力和应用私有 overlay，不写入 profile，也不修改 DSH 安装目录。Desktop 扩展默认不进入构建产物、不在启动时安装或启用；只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 才会预打包为可选资源。WebView 使用 `dsh.tauri.localhost` 同站点子域承接官方严格认证 cookie，并避开 Tauri 自身的 `tauri.localhost` 资源协议；实际 DSH 监听与外部浏览器地址仍是 `127.0.0.1`。架构与逐版本记录见 [DSH 核心兼容演进](./docs/dsh-core-compatibility/README.zh.md)。
+Desktop 会创建 `product-zlzhg` 档案作为干净的产品基线。该档案只叠加官方 `dsh-base` 与 `dsh-web-app`；`service/core_compatibility.rs` 将每个精确测试核心版本映射到明确协议能力和应用私有 overlay，不写入 profile，也不修改 DSH 安装目录。Desktop 扩展默认不进入构建产物、不在启动时安装或启用；只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 才会预打包为可选资源。WebView 使用 `dsh.tauri.localhost` 同站点子域承接官方严格认证 cookie，并避开 Tauri 自身的 `tauri.localhost` 资源协议；实际 DSH 监听与外部浏览器地址仍是 `127.0.0.1`。架构与逐版本中文记录见 [DSH 核心兼容演进](./docs/dsh-core-compatibility/README.md)。
 
 ## 说明
 

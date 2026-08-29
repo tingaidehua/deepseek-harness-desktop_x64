@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import process from 'node:process'
 
 const requestedVersion = process.argv[2]
 if (!requestedVersion)
@@ -20,11 +21,14 @@ const contexts = []
 let sequence = 0
 socket.addEventListener('message', (event) => {
   const message = JSON.parse(event.data)
-  if (message.method === 'Runtime.executionContextCreated') contexts.push(message.params.context)
-  if (!message.id || !pending.has(message.id)) return
+  if (message.method === 'Runtime.executionContextCreated')
+    contexts.push(message.params.context)
+  if (!message.id || !pending.has(message.id))
+    return
   const operation = pending.get(message.id)
   pending.delete(message.id)
-  if (message.error) operation.reject(new Error(JSON.stringify(message.error)))
+  if (message.error)
+    operation.reject(new Error(JSON.stringify(message.error)))
   else operation.resolve(message.result)
 })
 await new Promise((resolve, reject) => {
@@ -41,7 +45,11 @@ function call(method, params = {}) {
 await call('Runtime.enable')
 await new Promise(resolve => setTimeout(resolve, 250))
 const appContext = contexts.find(item =>
-  item.origin === 'http://tauri.localhost' || item.origin.startsWith('tauri://'))
+  item.origin === 'http://tauri.localhost'
+  || item.origin === 'http://desktop.tauri.localhost:1420'
+  || item.origin === 'http://localhost:1420'
+  || item.origin === 'http://127.0.0.1:1420'
+  || item.origin.startsWith('tauri://'))
 if (!appContext)
   throw new Error(`CORE_SELECT_APP_CONTEXT_MISSING: ${JSON.stringify(contexts)}`)
 
@@ -53,7 +61,8 @@ async function evaluate(expression, allowFailure = false) {
     returnByValue: true,
   })
   if (answer.exceptionDetails) {
-    if (allowFailure) return undefined
+    if (allowFailure)
+      return undefined
     throw new Error(`CORE_SELECT_EVALUATION: ${answer.exceptionDetails.exception?.description || answer.exceptionDetails.text}`)
   }
   return answer.result.value
@@ -71,7 +80,8 @@ const deadline = Date.now() + 60_000
 let health
 while (Date.now() < deadline) {
   health = await evaluate('globalThis.__TAURI_INTERNALS__.invoke("proxy_health_check")', true)
-  if (health !== undefined) break
+  if (health !== undefined)
+    break
   await new Promise(resolve => setTimeout(resolve, 500))
 }
 if (health === undefined)

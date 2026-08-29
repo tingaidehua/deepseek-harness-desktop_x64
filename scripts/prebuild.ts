@@ -54,6 +54,7 @@ const CORE_COMPATIBILITY_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'core-
 const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins')
 const PRESET_BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugin-artifacts')
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
+const LOCAL_SOURCE_RE = /^local:(.+)$/
 const CORE_TARGETS = JSON.parse(readFileSync(CORE_COMPATIBILITY_FILE, 'utf8')) as CoreTarget[]
 
 function die(message: string): never {
@@ -223,7 +224,14 @@ function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
 
   const temp = mkdtempSync(join(tmpdir(), `dsh-internal-${preset.id}-`))
   let source: string
-  if (preset.spec.startsWith('github:')) {
+  const localMatch = LOCAL_SOURCE_RE.exec(preset.spec)
+  if (localMatch !== null) {
+    source = resolve(REPO_ROOT, localMatch[1])
+    if (!existsSync(join(source, 'package.json')))
+      die(`${preset.id}: 本地插件源缺少 package.json: ${source}`)
+    console.log(`[prebuild] ${preset.id}: 来源仓库内 ${localMatch[1]}`)
+  }
+  else if (preset.spec.startsWith('github:')) {
     const clone = join(temp, preset.id)
     const gitSource = githubSource(preset.spec)
     run('git', ['clone', '--quiet', gitSource.url, clone], temp)
@@ -288,16 +296,33 @@ function main(): void {
   }
   const internal = JSON.parse(readFileSync(INTERNAL_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
   const presets = JSON.parse(readFileSync(PRESET_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
+  const requestedIds = new Set(
+    (process.env.DSH_DESKTOP_BUNDLE_PLUGIN_IDS ?? '')
+      .split(',')
+      .map(id => id.trim())
+      .filter(Boolean),
+  )
+  const selectedInternal = requestedIds.size === 0
+    ? internal
+    : internal.filter(plugin => requestedIds.has(plugin.id))
+  const selectedPresets = requestedIds.size === 0
+    ? presets
+    : presets.filter(plugin => requestedIds.has(plugin.id))
+  const unknownIds = [...requestedIds].filter(id =>
+    !internal.some(plugin => plugin.id === id) && !presets.some(plugin => plugin.id === id),
+  )
+  if (unknownIds.length > 0)
+    die(`指定了未知插件: ${unknownIds.join(', ')}`)
   if (internal.length === 0) {
     console.log('[prebuild] 内部插件清单为空，跳过')
     return
   }
-  console.log(`[prebuild] 拉取 ${internal.length} 个 internal 插件: ${internal.map(p => p.id).join(', ')}`)
-  for (const plugin of internal) {
+  console.log(`[prebuild] 制备 ${selectedInternal.length} 个 internal 插件: ${selectedInternal.map(p => p.id).join(', ')}`)
+  for (const plugin of selectedInternal) {
     buildPlugin(plugin)
   }
-  console.log(`[prebuild] 制备 ${presets.length} 个首次引导插件的版本世代产物`)
-  for (const plugin of presets)
+  console.log(`[prebuild] 制备 ${selectedPresets.length} 个首次引导插件的版本世代产物`)
+  for (const plugin of selectedPresets)
     buildPlugin(plugin, PRESET_BUNDLE_ROOT)
   console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}, ${PRESET_BUNDLE_ROOT}`)
 }

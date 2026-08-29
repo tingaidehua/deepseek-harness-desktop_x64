@@ -1,0 +1,113 @@
+{
+  "protocol": "desktop-feature-test-contract-v1",
+  "features": [
+    {
+      "id": "installation-and-lifecycle",
+      "interface": "tauri-ipc-and-control",
+      "commands": [
+        "install_dependencies",
+        "check_dsh_update",
+        "launch_harness",
+        "shutdown_harness",
+        "restart_harness",
+        "get_dsh_status",
+        "proxy_health_check",
+        "runtime_ready"
+      ],
+      "controlOperations": ["runtime.health", "runtime.info", "logs.bundle"]
+    },
+    {
+      "id": "plugin-management",
+      "interface": "tauri-ipc-and-surface-probe",
+      "commands": [
+        "get_preinstall_plugins",
+        "get_preinstall_pending",
+        "install_preinstall_plugins",
+        "cancel_preinstall_plugins",
+        "skip_preinstall_plugins",
+        "ensure_internal_plugins",
+        "open_preinstall_repo",
+        "get_dsh_plugins",
+        "refresh_plugin_updates",
+        "update_dsh_plugin",
+        "remove_dsh_plugin",
+        "report_plugin_error",
+        "detect_plugin_recovery",
+        "recover_plugin"
+      ],
+      "controlOperations": ["diagnostics.snapshot"]
+    },
+    {
+      "id": "profiles-and-cores",
+      "interface": "tauri-ipc-and-control",
+      "commands": [
+        "get_profiles",
+        "create_profile",
+        "set_active_profile",
+        "remove_profile",
+        "get_cores",
+        "set_active_core",
+        "download_core",
+        "remove_core",
+        "update_local_core"
+      ],
+      "controlOperations": ["profile.list", "core.list", "diagnostics.snapshot"]
+    },
+    {
+      "id": "machine-diagnostics",
+      "interface": "tauri-ipc-control-and-persisted-trace",
+      "commands": [
+        "get_diagnostics_snapshot",
+        "report_frame_readiness",
+        "report_surface_diagnostics",
+        "get_runtime_info",
+        "read_service_logs",
+        "read_run_logs",
+        "clear_service_logs",
+        "log_frontend"
+      ],
+      "controlOperations": [
+        "control.catalog",
+        "diagnostics.snapshot",
+        "runtime.info",
+        "logs.bundle",
+        "trace.read",
+        "stress.snapshot"
+      ]
+    },
+    {
+      "id": "desktop-settings-and-os",
+      "interface": "tauri-ipc",
+      "commands": [
+        "get_app_config",
+        "update_app_config",
+        "set_webview_zoom",
+        "adjust_webview_zoom",
+        "get_cli_link_status",
+        "open_in_browser",
+        "copy_service_url",
+        "reveal_data_dir",
+        "reveal_in_folder",
+        "open_dir",
+        "set_language",
+        "toggle_sidebar",
+        "get_dsh_theme",
+        "read_clipboard_image",
+        "show_native_notification"
+      ],
+      "controlOperations": ["runtime.info"]
+    },
+    {
+      "id": "desktop-update-and-links",
+      "interface": "tauri-ipc",
+      "commands": [
+        "check_desktop_update",
+        "download_desktop_update",
+        "open_desktop_installer",
+        "get_desktop_about",
+        "open_external_url"
+      ],
+      "controlOperations": ["runtime.info", "logs.bundle"]
+    }
+  ]
+}

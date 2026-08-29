@@ -11,6 +11,9 @@
     "dsh-tauri-ui",
     "dsh-tauri-worktree"
   ],
+  "hostPlugins": [
+    { "id": "dsh-desktop-control", "probe": "dsh-desktop-harness-recovery-v1" }
+  ],
   "resources": [
     { "id": "better-sidebar.terminal-bundle", "path": "/sidebar/bundle/terminal.js" },
     { "id": "better-sidebar.editor-bundle", "path": "/sidebar/bundle/editor.js" },
