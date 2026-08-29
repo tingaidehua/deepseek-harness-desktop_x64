@@ -5,6 +5,8 @@ src-tauri/gen
 src-tauri/resources/node
 src-tauri/resources/preset-plugins/
 src-tauri/resources/internal-plugins/
+src-tauri/resources/preset-plugin-artifacts/
+src-tauri/resources/deepseek-harness-patch/
 *.log
 .DS_Store
 .idea
@@ -17,3 +19,4 @@ skills
 .serena
 source/
 .gitmodules
+.codex-fresh-browser.png

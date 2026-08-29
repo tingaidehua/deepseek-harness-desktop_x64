@@ -1,15 +1,16 @@
 /**
- * prebuild：把 `src-tauri/resources/internal-plugins.json` 中声明的内部插件
- * 制备为随包产物，拷入 `src-tauri/resources/internal-plugins/<id>/`
+ * 可选扩展预打包：仅在 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 时，把
+ * 内置插件和社区预设清单制备为按 DSH 协议世代区分的随包产物，分别写入
+ * `resources/internal-plugins/<family>/<id>` 与
+ * `resources/preset-plugin-artifacts/<family>/<id>`。
  * （随 `bundle.resources` 随安装包分发）。两种来源：
  *
  * - `github:owner/repo`：从上游仓库克隆、安装依赖并构建（源码形态的插件）；
  * - npm 包名（`name[@version]`）：从 npm registry 拉取已发布产物，跳过构建
  *   （发布包自带 lib/，如 dsh-tauri@0.2.0）。
  *
- * 由 `pnpm build` 的 prebuild 生命周期自动触发（tauri 的 `beforeBuildCommand` 为
- * `pnpm build`，pnpm 先执行 `prebuild` 脚本）。应用启动时（service::plugin::internal）
- * 会核对内置插件是否已安装、安装路径是否仍指向该捆绑目录，未满足即强制重装。
+ * `pnpm build` 会调用本脚本，但默认只清理旧的扩展产物并退出，使官方 DSH
+ * 基线不依赖任何 Desktop 插件。启用预打包也只生成可选资源，不会在启动时安装。
  *
  * 约束：仅用 Node 内置模块（零新增依赖）；需要 git 与 pnpm 在 PATH 上；
  * 构建机器需可访问 GitHub 与 npm registry。通过 `tsx scripts/prebuild.ts`
@@ -37,8 +38,11 @@ interface InternalPlugin {
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
 const INTERNAL_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins.json')
+const PRESET_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugins.json')
 const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins')
+const PRESET_BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugin-artifacts')
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
+const PLUGIN_FAMILIES = ['legacy-web', 'authenticated-web-v1'] as const
 
 function die(message: string): never {
   console.error(`[prebuild] ${message}`)
@@ -62,13 +66,17 @@ function run(program: string, args: readonly string[], cwd: string): void {
 }
 
 /** `github:owner/repo[#ref]` → 可克隆的 https URL（忽略 ref，拉默认分支最新）。 */
-function githubUrl(spec: string): string {
+function githubSource(spec: string): { url: string, revision?: string } {
   const match = GIT_URL_RE.exec(spec)
   if (match === null) {
     die(`internal 插件 spec 必须是 github:owner/repo 形式，当前为: ${spec}`)
   }
   const repo = match[1].replace(/\.git$/, '')
-  return `https://github.com/${repo}.git`
+  const hash = spec.indexOf('#')
+  return {
+    url: `https://github.com/${repo}.git`,
+    revision: hash === -1 ? undefined : spec.slice(hash + 1),
+  }
 }
 
 /** `name[@version]`（含 scoped `@scope/name[@version]`）→ 裸包名，用于定位 node_modules。 */
@@ -100,8 +108,8 @@ function fetchNpmPackage(preset: InternalPlugin, temp: string): string {
  * 缺失白名单时拷贝整目录但排除 node_modules/.git 等开发噪声；
  * `package.json` 恒在（它是 `pnpm add file:<dir>` 的包名/入口来源）。
  */
-function collectBundle(preset: InternalPlugin, clone: string): void {
-  const dest = join(BUNDLE_ROOT, preset.id)
+function collectBundle(preset: InternalPlugin, clone: string, family: string, root = BUNDLE_ROOT): string {
+  const dest = join(root, family, preset.id)
   mkdirSync(dest, { recursive: true })
 
   const manifest = JSON.parse(readFileSync(join(clone, 'package.json'), 'utf8')) as Record<string, unknown>
@@ -110,7 +118,8 @@ function collectBundle(preset: InternalPlugin, clone: string): void {
     ? rawFiles.filter((f): f is string => typeof f === 'string')
     : undefined
   const skip = new Set(['node_modules', '.git', '.gitignore', '.npmrc'])
-  const entries = files !== undefined && files.length > 0
+  const hasGlob = files?.some(name => /[*?[\]{}]/.test(name)) ?? false
+  const entries = files !== undefined && files.length > 0 && !hasGlob
     ? files
     : readdirSync(clone).filter(name => !skip.has(name) && !name.endsWith('.tsbuildinfo'))
 
@@ -123,18 +132,87 @@ function collectBundle(preset: InternalPlugin, clone: string): void {
   }
   // 拷贝后置，确保即使白名单里没有 package.json 它也一定存在
   cpSync(join(clone, 'package.json'), join(dest, 'package.json'))
+  return dest
+}
+
+/** Adapt the published RC client artifact to alpha.1's public client-store split. */
+function adaptAuthenticatedWebV1(dest: string): void {
+  const manifestPath = join(dest, 'package.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    dependencies?: Record<string, string>
+    peerDependencies?: Record<string, string>
+    dsh?: { client?: { inject?: string[] } }
+  }
+  const inject = manifest.dsh?.client?.inject
+  if (inject !== undefined) {
+    manifest.dsh!.client!.inject = [...new Set(inject.map(name =>
+      name === '@deepseek-ai/dsh-client-runtime'
+        ? '@deepseek-ai/dsh-client-store'
+        : name,
+    ))]
+  }
+  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) {
+    if (!name.startsWith('@deepseek-ai/dsh-'))
+      continue
+    delete manifest.dependencies![name]
+    manifest.peerDependencies ??= {}
+    manifest.peerDependencies[name] = range
+  }
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+
+  function adaptJavaScriptTree(dir: string): void {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules')
+          adaptJavaScriptTree(path)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.js'))
+        continue
+      const source = readFileSync(path, 'utf8')
+      const adapted = source.replaceAll(
+        '@deepseek-ai/dsh-client-runtime/client',
+        '@deepseek-ai/dsh-client-store',
+      )
+      if (adapted !== source)
+        writeFileSync(path, `${adapted.trimEnd()}\n`)
+      if (adapted.includes('@deepseek-ai/dsh-client-runtime/client'))
+        die(`${path}: authenticated-web-v1 artifact still requests dsh-client-runtime/client`)
+    }
+  }
+  adaptJavaScriptTree(dest)
+
+  // alpha.1 的层级插槽要求贡献者通过 inject 等待父入口声明 children table。
+  // dsh-tauri-session 0.5.3 仍直接 register(settings.section)，Loader 会在父入口
+  // 尚未落账时拒绝整个插件图。适配固定发布制品，不修改官方核心或用户 profile。
+  if (manifest.name === 'dsh-tauri-session') {
+    const clientPath = join(dest, 'dist', 'client.js')
+    const source = readFileSync(clientPath, 'utf8')
+    const directRegistration = /([A-Za-z_$][\w$]*)\.effect\(\(\)=>\1\.slots\.register\((\{name:`settings\.section`,[\s\S]*?\},[A-Za-z_$][\w$]*)\),[A-Za-z_$][\w$]*\)/
+    const adapted = source.replace(
+      directRegistration,
+      '$1.slots.inject("settings.section",()=>$1.slots.register($2))',
+    )
+    if (adapted === source)
+      die(`${dest}: dsh-tauri-session settings.section registration adapter did not match`)
+    writeFileSync(clientPath, `${adapted.trimEnd()}\n`)
+  }
 }
 
 /** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
-function buildPlugin(preset: InternalPlugin): void {
-  const dest = join(BUNDLE_ROOT, preset.id)
-  rmSync(dest, { recursive: true, force: true })
+function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
+  for (const family of PLUGIN_FAMILIES)
+    rmSync(join(root, family, preset.id), { recursive: true, force: true })
 
   const temp = mkdtempSync(join(tmpdir(), `dsh-internal-${preset.id}-`))
   let source: string
   if (preset.spec.startsWith('github:')) {
     const clone = join(temp, preset.id)
-    run('git', ['clone', '--depth', '1', '--quiet', githubUrl(preset.spec), clone], temp)
+    const gitSource = githubSource(preset.spec)
+    run('git', ['clone', '--quiet', gitSource.url, clone], temp)
+    if (gitSource.revision !== undefined)
+      run('git', ['checkout', '--quiet', gitSource.revision], clone)
 
     const revision = spawnSync('git', ['-C', clone, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' })
     if (revision.status === 0) {
@@ -156,16 +234,42 @@ function buildPlugin(preset: InternalPlugin): void {
     source = fetchNpmPackage(preset, temp)
   }
 
-  collectBundle(preset, source)
+  for (const family of PLUGIN_FAMILIES) {
+    const dest = collectBundle(preset, source, family, root)
+    if (family === 'authenticated-web-v1')
+      adaptAuthenticatedWebV1(dest)
+    if (root === PRESET_BUNDLE_ROOT && preset.id === 'dsh-win-terminal-inspector') {
+      if (family === 'authenticated-web-v1') {
+        rmSync(dest, { recursive: true, force: true })
+      }
+      else {
+        const manifestPath = join(dest, 'package.json')
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+        manifest.dsh = { bundle: { patch: './cordis.patch.yml' } }
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+        writeFileSync(join(dest, 'cordis.patch.yml'), '- insert:\n    - id: win-terminal-inspector\n      name: dsh-win-terminal-inspector\n')
+      }
+    }
+  }
   rmSync(temp, { recursive: true, force: true })
-  console.log(`[prebuild] ${preset.id}: 产物已就绪 → ${dest}`)
+  console.log(`[prebuild] ${preset.id}: ${PLUGIN_FAMILIES.length} 个版本世代产物已就绪`)
 }
 
 function main(): void {
+  if (process.env.DSH_DESKTOP_BUNDLE_EXTENSIONS !== '1') {
+    rmSync(BUNDLE_ROOT, { recursive: true, force: true })
+    rmSync(PRESET_BUNDLE_ROOT, { recursive: true, force: true })
+    console.log('[prebuild] Desktop extensions disabled; building the clean official DSH baseline')
+    return
+  }
   if (!existsSync(INTERNAL_PLUGINS_FILE)) {
     die(`未找到内部插件清单 ${INTERNAL_PLUGINS_FILE}`)
   }
+  if (!existsSync(PRESET_PLUGINS_FILE)) {
+    die(`未找到首次引导插件清单 ${PRESET_PLUGINS_FILE}`)
+  }
   const internal = JSON.parse(readFileSync(INTERNAL_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
+  const presets = JSON.parse(readFileSync(PRESET_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
   if (internal.length === 0) {
     console.log('[prebuild] 内部插件清单为空，跳过')
     return
@@ -174,7 +278,10 @@ function main(): void {
   for (const plugin of internal) {
     buildPlugin(plugin)
   }
-  console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}`)
+  console.log(`[prebuild] 制备 ${presets.length} 个首次引导插件的版本世代产物`)
+  for (const plugin of presets)
+    buildPlugin(plugin, PRESET_BUNDLE_ROOT)
+  console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}, ${PRESET_BUNDLE_ROOT}`)
 }
 
 main()

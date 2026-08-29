@@ -1,7 +1,7 @@
 [
   {
     "id": "dsh-tauri",
-    "spec": "dsh-tauri",
+    "spec": "dsh-tauri@0.5.2",
     "name": "DSH Tauri",
     "description": "Message bridge for the DeepSeek Harness desktop shell",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri",
@@ -9,7 +9,7 @@
   },
   {
     "id": "dsh-tauri-ui",
-    "spec": "dsh-tauri-ui",
+    "spec": "dsh-tauri-ui@0.5.2",
     "name": "DSH Tauri UI",
     "description": "Customized Tauri UI plugin for the DeepSeek Harness desktop shell (skeleton): registers the shell.overlay seat for the future desktop chrome",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-ui",
@@ -17,7 +17,7 @@
   },
   {
     "id": "dsh-tauri-worktree",
-    "spec": "dsh-tauri-worktree",
+    "spec": "dsh-tauri-worktree@0.5.2",
     "name": "DSH Tauri Worktree",
     "description": "Per-session isolated Git Worktree for the desktop shell: switch a conversation to its own isolated worktree, then check changes back into a local dsh/ branch or discard them.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-worktree",
@@ -25,7 +25,7 @@
   },
   {
     "id": "dsh-tauri-panel",
-    "spec": "dsh-tauri-panel",
+    "spec": "dsh-tauri-panel@0.5.2",
     "name": "DSH Tauri Panel",
     "description": "Sidebar shell for the desktop: compact logo row (32px), a panel area holding the New Session item plus third-party panel items (sidebar.panel.action slot), and the panel.protocol service (open/render/close panel content) consumed by dsh-tauri-panel-extension.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel",
@@ -33,10 +33,26 @@
   },
   {
     "id": "dsh-tauri-panel-extension",
-    "spec": "dsh-tauri-panel-extension",
+    "spec": "dsh-tauri-panel-extension@0.5.2",
     "name": "DSH Tauri Panel Extension",
     "description": "Skills and MCP management in the DeepSeek Harness desktop extension panel.",
     "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-session",
+    "spec": "dsh-tauri-session@0.5.3",
+    "name": "DSH Tauri Session",
+    "description": "Archive-aware session management with search, sorting, grouping, project filters, and restore support",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session",
+    "recommended": true
+  },
+  {
+    "id": "dsh-tauri-rightclick",
+    "spec": "dsh-tauri-rightclick@0.5.3",
+    "name": "DSH Tauri Rightclick",
+    "description": "Context actions for sessions, workspaces, content, links, and input fields",
+    "repoUrl": "https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick",
     "recommended": true
   }
 ]
