@@ -682,13 +682,18 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::error!("Harness not installed");
         return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
     }
-    let adapter = crate::service::dsh_adapter::DshAdapter::active(&app_handle)?;
-    let adapter_overlay = adapter.prepare_overlay(&app_handle)?;
+    let compatibility = crate::service::core_compatibility::CoreCompatibility::active(&app_handle)?;
+    let compatibility_overlay = compatibility.prepare_overlay(&app_handle)?;
+    let capabilities = compatibility.capability_summary();
     log::info!(
-        "DSH adapter selected: id={}, version={}, overlay={}",
-        adapter.id(),
-        adapter.version(),
-        adapter_overlay.is_some()
+        "DSH core compatibility selected: version={}, web_launch={}, client_abi={}, slots={}, session={}, artifacts={}, overlay={}",
+        compatibility.version(),
+        capabilities.web_launch_protocol,
+        capabilities.client_abi,
+        capabilities.slot_protocol,
+        capabilities.session_format,
+        capabilities.plugin_artifact_set,
+        compatibility_overlay.is_some()
     );
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
@@ -867,11 +872,11 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
-    let launch_args = adapter.launch_args(
+    let launch_args = compatibility.launch_args(
         &dsh_binary_path,
         &active_profile,
         setting.port,
-        adapter_overlay.as_deref(),
+        compatibility_overlay.as_deref(),
     );
     let spawn_result = {
         #[cfg(windows)]
@@ -1269,12 +1274,14 @@ pub async fn proxy_health_check(
     let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
         .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
     let boot_endpoint = format!("{}/", config::get_dsh_service_url(port));
-    let adapter = crate::service::dsh_adapter::DshAdapter::active(app_handle)?;
+    let compatibility = crate::service::core_compatibility::CoreCompatibility::active(app_handle)?;
 
     // 新版 DSH 在 Loader 树 settle 后发布认证 URL，但 stdout 可能先于 HTTP
     // listener 可连接。认证 URL 只作为 Loader 就绪信号；再用匿名请求确认端口
     // 已经响应。401 是新版的预期结果，且不会消费一次性 token。
-    if adapter.requires_authenticated_url() && utils::authenticated_service_url(port).is_some() {
+    if compatibility.requires_authenticated_url()
+        && utils::authenticated_service_url(port).is_some()
+    {
         let response = client
             .get(&boot_endpoint)
             .send()
@@ -1291,7 +1298,7 @@ pub async fn proxy_health_check(
         ));
     }
 
-    if adapter.requires_authenticated_url() {
+    if compatibility.requires_authenticated_url() {
         return Err("HARNESS_NOT_READY: authenticated DSH URL has not been announced".into());
     }
 

@@ -1,7 +1,7 @@
 pub mod cli;
 pub mod core;
+pub mod core_compatibility;
 pub mod download;
-pub mod dsh_adapter;
 pub mod fs_guard;
 pub mod migrate;
 pub mod plugin;

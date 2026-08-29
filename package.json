@@ -9,6 +9,7 @@
     "dev": "vite",
     "prebuild": "tsx scripts/prebuild.ts",
     "build": "tsc && vite build && pnpm prebuild",
+    "diagnostics:select-core": "node scripts/dsh-select-core.mjs",
     "diagnostics:surface": "node scripts/dsh-surface-matrix.mjs",
     "preview": "vite preview",
     "tauri": "tsx scripts/predev.ts",

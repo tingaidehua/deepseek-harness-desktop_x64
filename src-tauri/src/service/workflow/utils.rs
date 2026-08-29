@@ -106,7 +106,7 @@ pub(super) fn health_probe_plugin_urls(port: u16, boot_html: &str) -> Vec<String
         .filter_map(|package| {
             // RC 使用单包路由 `/plugins/<pkg>/client.js`，alpha.1 使用可合并路由
             // `/plugins/??<pkg>/client.js`。两者都从启动页读取真实 revision，避免
-            // 猜测固定 URL；未来协议只需在适配器测试夹具中增加声明形式。
+            // 猜测固定 URL；未来协议只需在核心兼容记录的测试夹具中增加声明形式。
             let merged = format!("/plugins/??{package}/client.js");
             let single = format!("/plugins/{package}/client.js");
             let start = boot_html

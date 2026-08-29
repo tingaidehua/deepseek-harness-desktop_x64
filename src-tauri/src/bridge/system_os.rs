@@ -23,8 +23,8 @@ pub async fn proxy_health_check(app_handle: AppHandle) -> Result<String, String>
 pub async fn get_runtime_info(app_handle: AppHandle) -> Result<config::RuntimeInfo, String> {
     let port = config::get_store_dat_setting(&app_handle).port;
     let mut info = config::runtime_info(&app_handle, port);
-    info.webview_url =
-        crate::service::dsh_adapter::DshAdapter::active(&app_handle)?.webview_url(port);
+    info.webview_url = crate::service::core_compatibility::CoreCompatibility::active(&app_handle)?
+        .webview_url(port);
     Ok(info)
 }
 

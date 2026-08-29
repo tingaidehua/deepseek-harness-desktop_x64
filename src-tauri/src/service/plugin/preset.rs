@@ -97,11 +97,11 @@ const LEGACY_BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
 fn find_packaged_in_root(
     root: &std::path::Path,
     directory: &str,
-    family: &str,
+    artifact_set: &str,
     id: &str,
 ) -> Option<PathBuf> {
     let probe = |base: &std::path::Path| {
-        let dir = base.join(directory).join(family).join(id);
+        let dir = base.join(directory).join(artifact_set).join(id);
         dir.join("package.json").exists().then_some(dir)
     };
     probe(&root.join("resources")).or_else(|| probe(root))
@@ -117,35 +117,36 @@ fn find_packaged_in_root(
 /// junction（目录联接），改源码 + 重启服务即热更新，无需提交子插件 git、无需
 /// prebuild；设置但缺该 id 返回 None（跳过，不回落随包目录），让开发者显式感知。
 pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
-    let family = crate::service::dsh_adapter::DshAdapter::active(app_handle)
+    let artifact_set = crate::service::core_compatibility::CoreCompatibility::active(app_handle)
         .ok()?
-        .plugin_family();
+        .plugin_artifact_set();
     #[cfg(debug_assertions)]
     if let Some(root) = dev_internal_plugins_dir() {
-        let dev = root.join(family).join(id);
+        let dev = root.join(artifact_set).join(id);
         return dev.join("package.json").exists().then_some(dev);
     }
     if let Ok(dir) = app_handle.path().resource_dir() {
-        if let Some(candidate) = find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, family, id) {
+        if let Some(candidate) = find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, artifact_set, id)
+        {
             return Some(candidate);
         }
     }
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join(BUNDLED_PLUGINS_DIR)
-        .join(family)
+        .join(artifact_set)
         .join(id);
     source.join("package.json").exists().then_some(source)
 }
 
 /// 定位与当前核心协议世代匹配的社区预设离线产物。
 pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
-    let family = crate::service::dsh_adapter::DshAdapter::active(app_handle)
+    let artifact_set = crate::service::core_compatibility::CoreCompatibility::active(app_handle)
         .ok()?
-        .plugin_family();
+        .plugin_artifact_set();
     if let Ok(dir) = app_handle.path().resource_dir() {
         if let Some(candidate) =
-            find_packaged_in_root(&dir, PRESET_PLUGIN_ARTIFACTS_DIR, family, id)
+            find_packaged_in_root(&dir, PRESET_PLUGIN_ARTIFACTS_DIR, artifact_set, id)
         {
             return Some(candidate);
         }
@@ -153,7 +154,7 @@ pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Op
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join(PRESET_PLUGIN_ARTIFACTS_DIR)
-        .join(family)
+        .join(artifact_set)
         .join(id);
     source.join("package.json").exists().then_some(source)
 }
@@ -161,8 +162,8 @@ pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Op
 /// 新世代核心已经原生提供 Windows 进程检查器，不应再加载覆盖核心实现的旧插件。
 pub(crate) fn provided_by_active_core(app_handle: &AppHandle, id: &str) -> bool {
     id == "dsh-win-terminal-inspector"
-        && crate::service::dsh_adapter::DshAdapter::active(app_handle)
-            .is_ok_and(|adapter| adapter.id() == "authenticated-web-v1")
+        && crate::service::core_compatibility::CoreCompatibility::active(app_handle)
+            .is_ok_and(|compatibility| compatibility.provides_win_terminal_inspector())
 }
 
 /// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的
@@ -614,18 +615,14 @@ mod tests {
         let nested = dir
             .join("resources")
             .join(BUNDLED_PLUGINS_DIR)
-            .join("authenticated-web-v1")
+            .join("dsh-v0.1.2-alpha.1")
             .join("dsh-tauri");
         std::fs::create_dir_all(&nested).expect("create temp nested bundled dir");
         std::fs::write(nested.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found = find_packaged_in_root(
-            &dir,
-            BUNDLED_PLUGINS_DIR,
-            "authenticated-web-v1",
-            "dsh-tauri",
-        )
-        .expect("nested bundled dir should be found");
+        let found =
+            find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "dsh-v0.1.2-alpha.1", "dsh-tauri")
+                .expect("nested bundled dir should be found");
         assert_eq!(found, nested);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -636,13 +633,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-bundled-flat-{}", std::process::id()));
         let flat = dir
             .join(BUNDLED_PLUGINS_DIR)
-            .join("legacy-web")
+            .join("dsh-v0.1.1-rc.2")
             .join("dsh-tauri");
         std::fs::create_dir_all(&flat).expect("create temp flat bundled dir");
         std::fs::write(flat.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found = find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "legacy-web", "dsh-tauri")
-            .expect("flat bundled dir should be found");
+        let found =
+            find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "dsh-v0.1.1-rc.2", "dsh-tauri")
+                .expect("flat bundled dir should be found");
         assert_eq!(found, flat);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -654,12 +652,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dsh-bundled-empty-{}", std::process::id()));
         std::fs::create_dir_all(
             dir.join(BUNDLED_PLUGINS_DIR)
-                .join("legacy-web")
+                .join("dsh-v0.1.1-rc.2")
                 .join("dsh-tauri"),
         )
         .expect("create empty dir");
         assert!(
-            find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "legacy-web", "dsh-tauri").is_none()
+            find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "dsh-v0.1.1-rc.2", "dsh-tauri",)
+                .is_none()
         );
         std::fs::remove_dir_all(&dir).ok();
     }

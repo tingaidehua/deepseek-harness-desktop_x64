@@ -1,8 +1,8 @@
 /**
  * 可选扩展预打包：仅在 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 时，把
- * 内置插件和社区预设清单制备为按 DSH 协议世代区分的随包产物，分别写入
- * `resources/internal-plugins/<family>/<id>` 与
- * `resources/preset-plugin-artifacts/<family>/<id>`。
+ * 内置插件和社区预设清单制备为按已验证 DSH 版本区分的随包产物，分别写入
+ * `resources/internal-plugins/dsh-v<version>/<id>` 与
+ * `resources/preset-plugin-artifacts/dsh-v<version>/<id>`。
  * （随 `bundle.resources` 随安装包分发）。两种来源：
  *
  * - `github:owner/repo`：从上游仓库克隆、安装依赖并构建（源码形态的插件）；
@@ -36,13 +36,25 @@ interface InternalPlugin {
   spec: string
 }
 
+interface CoreTarget {
+  coreVersion: string
+  webLaunchProtocol: string
+  clientAbi: string
+  slotProtocol: string
+  sessionFormat: string
+  pluginArtifactSet: string
+  supportsNoOpen: boolean
+  providesWinTerminalInspector: boolean
+}
+
 const REPO_ROOT = resolve(import.meta.dirname, '..')
 const INTERNAL_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins.json')
 const PRESET_PLUGINS_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugins.json')
+const CORE_COMPATIBILITY_FILE = join(REPO_ROOT, 'src-tauri', 'resources', 'core-compatibility.json')
 const BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'internal-plugins')
 const PRESET_BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plugin-artifacts')
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
-const PLUGIN_FAMILIES = ['legacy-web', 'authenticated-web-v1'] as const
+const CORE_TARGETS = JSON.parse(readFileSync(CORE_COMPATIBILITY_FILE, 'utf8')) as CoreTarget[]
 
 function die(message: string): never {
   console.error(`[prebuild] ${message}`)
@@ -108,8 +120,8 @@ function fetchNpmPackage(preset: InternalPlugin, temp: string): string {
  * 缺失白名单时拷贝整目录但排除 node_modules/.git 等开发噪声；
  * `package.json` 恒在（它是 `pnpm add file:<dir>` 的包名/入口来源）。
  */
-function collectBundle(preset: InternalPlugin, clone: string, family: string, root = BUNDLE_ROOT): string {
-  const dest = join(root, family, preset.id)
+function collectBundle(preset: InternalPlugin, clone: string, artifactSet: string, root = BUNDLE_ROOT): string {
+  const dest = join(root, artifactSet, preset.id)
   mkdirSync(dest, { recursive: true })
 
   const manifest = JSON.parse(readFileSync(join(clone, 'package.json'), 'utf8')) as Record<string, unknown>
@@ -136,7 +148,7 @@ function collectBundle(preset: InternalPlugin, clone: string, family: string, ro
 }
 
 /** Adapt the published RC client artifact to alpha.1's public client-store split. */
-function adaptAuthenticatedWebV1(dest: string): void {
+function adaptSplitClientV1(dest: string): void {
   const manifestPath = join(dest, 'package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     dependencies?: Record<string, string>
@@ -178,11 +190,15 @@ function adaptAuthenticatedWebV1(dest: string): void {
       if (adapted !== source)
         writeFileSync(path, `${adapted.trimEnd()}\n`)
       if (adapted.includes('@deepseek-ai/dsh-client-runtime/client'))
-        die(`${path}: authenticated-web-v1 artifact still requests dsh-client-runtime/client`)
+        die(`${path}: split-client-v1 artifact still requests dsh-client-runtime/client`)
     }
   }
   adaptJavaScriptTree(dest)
+}
 
+/** Adapt direct RC slot registration to the alpha.1 injected-slot protocol. */
+function adaptInjectedSlotsV1(dest: string): void {
+  const manifest = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')) as { name?: string }
   // alpha.1 的层级插槽要求贡献者通过 inject 等待父入口声明 children table。
   // dsh-tauri-session 0.5.3 仍直接 register(settings.section)，Loader 会在父入口
   // 尚未落账时拒绝整个插件图。适配固定发布制品，不修改官方核心或用户 profile。
@@ -195,15 +211,15 @@ function adaptAuthenticatedWebV1(dest: string): void {
       '$1.slots.inject("settings.section",()=>$1.slots.register($2))',
     )
     if (adapted === source)
-      die(`${dest}: dsh-tauri-session settings.section registration adapter did not match`)
+      die(`${dest}: injected-slots-v1 dsh-tauri-session transform did not match`)
     writeFileSync(clientPath, `${adapted.trimEnd()}\n`)
   }
 }
 
 /** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
 function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
-  for (const family of PLUGIN_FAMILIES)
-    rmSync(join(root, family, preset.id), { recursive: true, force: true })
+  for (const target of CORE_TARGETS)
+    rmSync(join(root, target.pluginArtifactSet, preset.id), { recursive: true, force: true })
 
   const temp = mkdtempSync(join(tmpdir(), `dsh-internal-${preset.id}-`))
   let source: string
@@ -234,12 +250,14 @@ function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
     source = fetchNpmPackage(preset, temp)
   }
 
-  for (const family of PLUGIN_FAMILIES) {
-    const dest = collectBundle(preset, source, family, root)
-    if (family === 'authenticated-web-v1')
-      adaptAuthenticatedWebV1(dest)
+  for (const target of CORE_TARGETS) {
+    const dest = collectBundle(preset, source, target.pluginArtifactSet, root)
+    if (target.clientAbi === 'split-client-v1')
+      adaptSplitClientV1(dest)
+    if (target.slotProtocol === 'injected-slots-v1')
+      adaptInjectedSlotsV1(dest)
     if (root === PRESET_BUNDLE_ROOT && preset.id === 'dsh-win-terminal-inspector') {
-      if (family === 'authenticated-web-v1') {
+      if (target.providesWinTerminalInspector) {
         rmSync(dest, { recursive: true, force: true })
       }
       else {
@@ -252,7 +270,7 @@ function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
     }
   }
   rmSync(temp, { recursive: true, force: true })
-  console.log(`[prebuild] ${preset.id}: ${PLUGIN_FAMILIES.length} 个版本世代产物已就绪`)
+  console.log(`[prebuild] ${preset.id}: ${CORE_TARGETS.length} 个精确核心版本产物已就绪`)
 }
 
 function main(): void {

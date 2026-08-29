@@ -112,7 +112,7 @@ Use `pnpm tauri build --no-bundle` for a production Desktop smoke test. A bare `
 │ Tauri Rust backend                           │
 │   service/download  installer + extraction   │
 │   service/core      Harness core versions    │
-│   service/dsh_adapter upstream compatibility │
+│ service/core_compatibility protocol records  │
 │   service/profile   dsh profile management   │
 │   service/plugin    plugin remove / upgrade  │
 │   service/cli       dsh command shim + PATH  │
@@ -124,7 +124,7 @@ Use `pnpm tauri build --no-bundle` for a production Desktop smoke test. A bare `
   runtime/ (Node.js v22.22.0)   dependencies/dsh/ (prebuilt bundle)
        └─────────────┬─────────────┘
                      ▼
-   dsh --profile <profile> [--patch Desktop adapter] --host 127.0.0.1 --port 3080
+   dsh --profile <profile> [--patch protocol overlay] --host 127.0.0.1 --port 3080
                      │  DSH_HOME=~/.dsh
                      ▼
         http://127.0.0.1:3080/  ← embedded UI
@@ -132,7 +132,7 @@ Use `pnpm tauri build --no-bundle` for a production Desktop smoke test. A bare `
 
 The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch compares against the latest release and prompts you to download the update when the local one is outdated — keeping the local install when GitHub is unreachable. A local core installed globally via the CLI is preferred when present.
 
-Desktop creates `product-zlzhg` as a clean product baseline. It stacks only the official `dsh-base` and `dsh-web-app` bundles. `service/dsh_adapter.rs` selects an app-owned overlay for version differences without writing to the profile or modifying the DSH installation. Desktop extensions are excluded from normal builds and are never installed or enabled during launch; set `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` explicitly to package them as optional resources. The WebView uses the same-site `dsh.tauri.localhost` subdomain for the official strict authentication cookie while avoiding Tauri's own `tauri.localhost` asset protocol; DSH still listens on `127.0.0.1`, which external browsers continue to use. See [DSH adapter evolution](./docs/dsh-adapters/README.md) for the architecture and version records.
+Desktop creates `product-zlzhg` as a clean product baseline. It stacks only the official `dsh-base` and `dsh-web-app` bundles. `service/core_compatibility.rs` maps each exact tested core version to explicit protocol capabilities and an app-owned overlay without writing to the profile or modifying the DSH installation. Desktop extensions are excluded from normal builds and are never installed or enabled during launch; set `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` explicitly to package them as optional resources. The WebView uses the same-site `dsh.tauri.localhost` subdomain for the official strict authentication cookie while avoiding Tauri's own `tauri.localhost` asset protocol; DSH still listens on `127.0.0.1`, which external browsers continue to use. See [DSH core compatibility evolution](./docs/dsh-core-compatibility/README.md) for the architecture and version records.
 
 ## Notes
 

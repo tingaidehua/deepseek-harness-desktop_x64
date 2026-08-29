@@ -8,7 +8,7 @@ use tauri::AppHandle;
 use super::installed::is_installed;
 use super::preset::provided_by_active_core;
 
-/// 把内置插件与用户选择的社区预设重绑定到当前活动核心的适配器世代。
+/// 把内置插件与用户选择的社区预设重绑定到当前活动核心的精确制品集。
 pub(crate) async fn rebind_for_active_core(app_handle: &AppHandle) -> Result<(), String> {
     let selected = crate::config::get_store_dat_setting(app_handle).managed_preset_plugins;
 

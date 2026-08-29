@@ -2,8 +2,11 @@ import { readFile } from 'node:fs/promises'
 
 const cdpPort = process.env.DSH_DESKTOP_CDP_PORT || '9337'
 const contracts = JSON.parse(await readFile(new URL('../src-tauri/resources/surface-contracts.json', import.meta.url), 'utf8'))
+const compatibilityRecords = JSON.parse(await readFile(new URL('../src-tauri/resources/core-compatibility.json', import.meta.url), 'utf8'))
 const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json()
-const target = targets.find(item => item.url.startsWith('http://127.0.0.1:'))
+const appTarget = targets.find(item => item.type === 'page' && item.url === 'http://tauri.localhost/')
+if (!appTarget) throw new Error('SURFACE_MATRIX_APP_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
+const target = targets.find(item => item.url.startsWith('http://127.0.0.1:') || item.url.startsWith('http://dsh.tauri.localhost:'))
   || targets.find(item => item.type === 'page')
 if (!target) throw new Error('SURFACE_MATRIX_TARGET_MISSING: start Desktop with WebView2 remote debugging enabled')
 
@@ -37,14 +40,59 @@ const context = contexts.find(item =>
   item.origin.startsWith('http://dsh.tauri.localhost:') || item.origin.startsWith('http://127.0.0.1:'))
 if (!context) throw new Error(`SURFACE_MATRIX_CONTEXT_MISSING: ${JSON.stringify(contexts)}`)
 
-async function evaluate(expression) {
+async function evaluateIn(contextId, expression) {
   const answer = await call('Runtime.evaluate', {
-    contextId: context.id,
+    contextId,
     expression,
     awaitPromise: true,
     returnByValue: true,
   })
   if (answer.exceptionDetails) throw new Error(`SURFACE_MATRIX_EVALUATION: ${answer.exceptionDetails.text}`)
+  return answer.result.value
+}
+
+async function evaluate(expression) {
+  return evaluateIn(context.id, expression)
+}
+
+async function evaluateApp(expression) {
+  const appSocket = new WebSocket(appTarget.webSocketDebuggerUrl)
+  const appPending = new Map()
+  const appContexts = []
+  let appSequence = 0
+  appSocket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data)
+    if (message.method === 'Runtime.executionContextCreated') appContexts.push(message.params.context)
+    if (!message.id || !appPending.has(message.id)) return
+    const operation = appPending.get(message.id)
+    appPending.delete(message.id)
+    if (message.error) operation.reject(new Error(JSON.stringify(message.error)))
+    else operation.resolve(message.result)
+  })
+  await new Promise((resolve, reject) => {
+    appSocket.addEventListener('open', resolve, { once: true })
+    appSocket.addEventListener('error', reject, { once: true })
+  })
+  function appCall(method, params = {}) {
+    const id = ++appSequence
+    appSocket.send(JSON.stringify({ id, method, params }))
+    return new Promise((resolve, reject) => appPending.set(id, { resolve, reject }))
+  }
+  await appCall('Runtime.enable')
+  await new Promise(resolve => setTimeout(resolve, 100))
+  const appContext = appContexts.find(item =>
+    item.origin === 'http://tauri.localhost' || item.origin.startsWith('tauri://'))
+  if (!appContext)
+    throw new Error(`SURFACE_MATRIX_APP_CONTEXT_MISSING: ${JSON.stringify(appContexts)}`)
+  const answer = await appCall('Runtime.evaluate', {
+    contextId: appContext.id,
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  })
+  appSocket.close()
+  if (answer.exceptionDetails)
+    throw new Error(`SURFACE_MATRIX_APP_EVALUATION: ${answer.exceptionDetails.text}`)
   return answer.result.value
 }
 
@@ -69,9 +117,18 @@ function visibleFailure(text) {
   return contracts.visibleFailurePatterns.find(pattern => lower.includes(pattern.toLowerCase()))
 }
 
-const adapter = context.origin.startsWith('http://dsh.tauri.localhost:')
-  ? 'authenticated-web-v1'
-  : 'legacy-web'
+const observedLaunchProtocol = context.origin.startsWith('http://dsh.tauri.localhost:')
+  ? 'token-cookie-v1'
+  : 'direct-loopback-v1'
+const diagnostics = await evaluateApp('globalThis.__TAURI_INTERNALS__.invoke("get_diagnostics_snapshot")')
+const coreCompatibility = diagnostics.coreCompatibility
+if (!coreCompatibility)
+  throw new Error(`SURFACE_MATRIX_UNSUPPORTED_CORE: ${diagnostics.core.version}`)
+if (coreCompatibility.webLaunchProtocol !== observedLaunchProtocol) {
+  throw new Error(
+    `SURFACE_MATRIX_PROTOCOL_MISMATCH: core=${coreCompatibility.coreVersion}; expected=${coreCompatibility.webLaunchProtocol}; observed=${observedLaunchProtocol}`,
+  )
+}
 const checks = []
 const warnings = []
 function record(id, ok, detail) {
@@ -80,7 +137,11 @@ function record(id, ok, detail) {
 
 const bootstrap = await evaluate('({ loader: globalThis.__ModuleLoader__?.mode, ownsHost: globalThis.__DSH_TRANSPORT__?.ownsHost === true })')
 record('web.loader-live', bootstrap.loader === 'live', `mode=${bootstrap.loader}`)
-record('web.host-privilege', adapter === 'legacy-web' || bootstrap.ownsHost, `adapter=${adapter}; ownsHost=${bootstrap.ownsHost}`)
+record(
+  'web.host-privilege',
+  coreCompatibility.webLaunchProtocol === 'direct-loopback-v1' || bootstrap.ownsHost,
+  `webLaunchProtocol=${coreCompatibility.webLaunchProtocol}; ownsHost=${bootstrap.ownsHost}`,
+)
 const bootGraph = await evaluate('JSON.stringify(globalThis.__DSH_BOOT__ || {})')
 for (const plugin of contracts.plugins) {
   record(`boot.plugin.${plugin}`, bootGraph.includes(`"${plugin}"`), 'declared in the composed Client boot graph')
@@ -111,7 +172,7 @@ for (const surface of contracts.settingsSurfaces) {
   if (surface.id === 'plugins') pluginText = text
 }
 
-if (adapter === 'authenticated-web-v1') {
+if (coreCompatibility.clientAbi === 'split-client-v1') {
   record('settings.plugins.subagent-card', pluginText.includes('Subagent'), 'alpha client capability')
 }
 record('settings.plugins.shell-card', pluginText.includes('终端') || pluginText.includes('Terminal'), 'Host settings namespace')
@@ -139,7 +200,7 @@ if (/SessionPersistenceCorruptionError|历史加载失败/.test(finalText)) {
 const failed = checks.filter(check => !check.ok)
 const report = {
   state: failed.length === 0 ? 'ready' : 'failed',
-  adapter,
+  coreCompatibility,
   origin: context.origin,
   checks,
   warnings,

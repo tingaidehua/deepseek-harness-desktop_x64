@@ -31,7 +31,7 @@ const WEB_PROFILE_BUNDLES: [&str; 2] = ["@deepseek-ai/dsh-base", "@deepseek-ai/d
 const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n";
 
 /// 早期 Desktop 直接写进产品 profile 的认证配置。适配层现已迁到应用私有
-/// `dsh-adapters/` overlay；只清理这一份精确内容，不触碰用户编辑过的 patch。
+/// `dsh-compatibility/` overlay；只清理这一份精确内容，不触碰用户编辑过的 patch。
 const LEGACY_DESKTOP_PRODUCT_PATCH: &str = "# Desktop embeds the official web app through a same-site hostname so the\n# official HttpOnly SameSite=Strict authentication cookie remains valid.\n- id: connection\n  config:\n    trustedHosts: !!js \"['tauri.localhost', ...ctx.webRuntime.trustedHosts]\"\n";
 
 /// dsh `initProfile` 生成的 pnpm 设置（与官方一致）

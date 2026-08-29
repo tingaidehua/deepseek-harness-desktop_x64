@@ -16,7 +16,7 @@ pub struct CoreIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct WebviewRouteDiagnostic {
     pub state: String,
-    pub adapter: String,
+    pub core_compatibility: crate::service::core_compatibility::CoreCapabilitySummary,
     pub target_origin: String,
     pub reported_origin: Option<String>,
     pub loader_present: bool,
@@ -36,7 +36,7 @@ pub struct SurfaceCheck {
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceDiagnostic {
     pub state: String,
-    pub adapter: String,
+    pub core_compatibility: crate::service::core_compatibility::CoreCapabilitySummary,
     pub origin: String,
     pub loader_present: bool,
     pub transport_owns_host: bool,
@@ -54,6 +54,7 @@ pub struct DiagnosticsSnapshot {
     pub core_path: String,
     pub profile_path: String,
     pub core: CoreIdentity,
+    pub core_compatibility: Option<crate::service::core_compatibility::CoreCapabilitySummary>,
     pub plugin_compatibility: crate::service::plugin::compatibility::CompatibilityReport,
     pub webview_route: Option<WebviewRouteDiagnostic>,
     pub surface: Option<SurfaceDiagnostic>,
@@ -98,8 +99,8 @@ pub fn record_webview_route(
         return Err(format!("WEBVIEW_DIAGNOSTIC_INVALID_STATE: {state}"));
     }
     let port = crate::config::get_store_dat_setting(app_handle).port;
-    let adapter = crate::service::dsh_adapter::DshAdapter::active(app_handle)?;
-    let expected = adapter
+    let compatibility = crate::service::core_compatibility::CoreCompatibility::active(app_handle)?;
+    let expected = compatibility
         .webview_url(port)
         .ok_or_else(|| "WEBVIEW_DIAGNOSTIC_TARGET_UNAVAILABLE".to_string())?;
     let target_origin = redacted_origin(&expected)
@@ -110,7 +111,7 @@ pub fn record_webview_route(
     }
     let observation = WebviewRouteDiagnostic {
         state: state.to_string(),
-        adapter: adapter.id().to_string(),
+        core_compatibility: compatibility.capability_summary(),
         target_origin,
         reported_origin,
         loader_present,
@@ -144,8 +145,8 @@ pub fn record_surface_diagnostic(
     failures: Vec<String>,
 ) -> Result<SurfaceDiagnostic, String> {
     let port = crate::config::get_store_dat_setting(app_handle).port;
-    let adapter = crate::service::dsh_adapter::DshAdapter::active(app_handle)?;
-    let expected = adapter
+    let compatibility = crate::service::core_compatibility::CoreCompatibility::active(app_handle)?;
+    let expected = compatibility
         .webview_url(port)
         .ok_or_else(|| "SURFACE_DIAGNOSTIC_TARGET_UNAVAILABLE".to_string())?;
     let expected_origin = redacted_origin(&expected)
@@ -173,7 +174,7 @@ pub fn record_surface_diagnostic(
     let failed = checks.iter().any(|check| !check.ok) || !failures.is_empty();
     let report = SurfaceDiagnostic {
         state: if failed { "degraded" } else { "ready" }.to_string(),
-        adapter: adapter.id().to_string(),
+        core_compatibility: compatibility.capability_summary(),
         origin,
         loader_present,
         transport_owns_host,
@@ -259,6 +260,17 @@ fn read_core_identity(core: &Path) -> CoreIdentity {
     }
 }
 
+fn core_compatibility(
+    core: &CoreIdentity,
+) -> Option<crate::service::core_compatibility::CoreCapabilitySummary> {
+    core.version
+        .as_deref()
+        .and_then(|version| {
+            crate::service::core_compatibility::CoreCompatibility::resolve(version).ok()
+        })
+        .map(|compatibility| compatibility.capability_summary())
+}
+
 /// Build an offline snapshot without creating a WebView or starting DSH.
 pub fn snapshot_from_roots(
     app_data: &Path,
@@ -273,13 +285,15 @@ pub fn snapshot_from_roots(
     let profile_path = dsh_home.join("profiles").join(profile);
     let plugin_compatibility =
         crate::service::plugin::compatibility::inspect(&core_path, &profile_path)?;
+    let core = read_core_identity(&core_path);
     Ok(DiagnosticsSnapshot {
         active_core_tag,
         recorded_release_tag,
         recorded_source_commit,
         core_path: core_path.to_string_lossy().into_owned(),
         profile_path: profile_path.to_string_lossy().into_owned(),
-        core: read_core_identity(&core_path),
+        core_compatibility: core_compatibility(&core),
+        core,
         plugin_compatibility,
         webview_route: read_webview_route(app_data),
         surface: read_surface_diagnostic(app_data),
@@ -291,13 +305,15 @@ pub fn snapshot_for_paths(
     core_path: &Path,
     profile_path: &Path,
 ) -> Result<DiagnosticsSnapshot, String> {
+    let core = read_core_identity(core_path);
     Ok(DiagnosticsSnapshot {
         active_core_tag: None,
         recorded_release_tag: None,
         recorded_source_commit: None,
         core_path: core_path.to_string_lossy().into_owned(),
         profile_path: profile_path.to_string_lossy().into_owned(),
-        core: read_core_identity(core_path),
+        core_compatibility: core_compatibility(&core),
+        core,
         plugin_compatibility: crate::service::plugin::compatibility::inspect(
             core_path,
             profile_path,
@@ -315,13 +331,15 @@ pub fn active_snapshot(app_handle: &AppHandle) -> Result<DiagnosticsSnapshot, St
         &crate::service::profile::active_profile(app_handle),
     );
     let setting = crate::config::get_store_dat_setting(app_handle);
+    let core = read_core_identity(&core_path);
     Ok(DiagnosticsSnapshot {
         active_core_tag: crate::config::get_active_dsh_slot(app_handle),
         recorded_release_tag: setting.dsh_pkg_tag,
         recorded_source_commit: setting.dsh_pkg_commit,
         core_path: core_path.to_string_lossy().into_owned(),
         profile_path: profile_path.to_string_lossy().into_owned(),
-        core: read_core_identity(&core_path),
+        core_compatibility: core_compatibility(&core),
+        core,
         plugin_compatibility: crate::service::plugin::compatibility::inspect(
             &core_path,
             &profile_path,
