@@ -1,67 +1,68 @@
-# DSH Core Compatibility Evolution
+# DSH 核心兼容演进
 
-## Summary
+## 摘要
 
-This directory records how Deepseek Harness Desktop follows breaking DSH releases. The index owns the stable compatibility architecture; one version-named record owns the upstream changes, observed conflicts, responsibility analysis, implementation decisions, verification evidence, and remaining debt for each supported core.
+本目录记录 Deepseek Harness Desktop 如何跟进 DSH 的破坏性版本。索引文档保存稳定的兼容架构；每个以版本命名的记录保存该核心的上游更新、实际冲突、责任分析、实现决策、验证证据和剩余债务。
 
-## Table of Contents
+## 目录
 
-- [Purpose](#purpose)
-- [Architecture](#architecture)
-- [Compatibility ownership](#compatibility-ownership)
-- [Version records](#version-records)
-- [Adaptation method](#adaptation-method)
-- [Acceptance standard](#acceptance-standard)
-- [Long-term direction](#long-term-direction)
+- [目的](#目的)
+- [架构](#架构)
+- [兼容责任](#兼容责任)
+- [版本记录](#版本记录)
+- [适配方法](#适配方法)
+- [验收标准](#验收标准)
+- [长期方向](#长期方向)
 
-## Purpose
+## 目的
 
-Desktop treats DSH as an independently evolving product, not as an implementation detail to freeze or patch in place. An adaptation follows the public contracts and security model of the target core, keeps the official core artifact immutable, and records enough evidence for another maintainer or coding agent to reproduce the decision.
+Desktop 将 DSH 视为独立演进的产品，而不是需要冻结或原地打补丁的实现细节。一次适配必须遵循目标核心的公开契约和安全模型，保持官方核心制品不可变，并留下足够证据，使其他维护者或编码 Agent 能够复现决策。
 
-Each version record answers six questions: what changed upstream, which Desktop or plugin assumptions conflicted, why each conflict occurred, which work was unavoidable, which work exposed Desktop architecture debt, and which architectural change reduces the cost of the next update.
+每份版本记录回答六个问题：上游更新了什么、哪些 Desktop 或插件假设发生冲突、每项冲突为何出现、哪些工作不可避免、哪些工作暴露了 Desktop 架构债务，以及哪项架构更改能够降低下一次更新成本。
 
-## Architecture
+## 架构
 
-1. `dependencies/cores/<tag>` stores one immutable official or locally packaged DSH artifact; `dependencies/active-core` selects a slot without copying or editing it.
-2. `product-zlzhg` starts from the official Web bundles and keeps user configuration separate from Desktop compatibility behavior.
-3. `src-tauri/resources/core-compatibility.json` is the single version-capability table consumed by runtime selection, plugin preparation and the surface matrix; `service/core_compatibility.rs` rejects versions absent from it.
-4. Desktop-managed plugins persist as logical selections. Core switching projects those selections into exact version-named internal and preset artifacts, then runs a compatibility gate before launch.
-5. The shell consumes a stable runtime result. Workflow owns processes and ports; React does not branch on DSH versions.
-6. Machine-readable diagnostics and a real-frame surface matrix verify the boot graph, settings pages, lazy resources, and sidebar contributions without relying on manual clicking.
+1. `dependencies/cores/<tag>` 保存一个不可变的官方或本地打包 DSH 制品；`dependencies/active-core` 只选择槽位，不复制或修改核心。
+2. `product-zlzhg` 从官方 Web bundles 初始化，并将用户配置与 Desktop 兼容行为分离。
+3. `src-tauri/resources/core-compatibility.json` 是运行时选择、插件制备和功能面矩阵共同消费的唯一版本能力表；`service/core_compatibility.rs` 拒绝表中不存在的版本。
+4. Desktop 管理的插件持久化为逻辑选择。切换核心时，这些选择投影为以精确版本命名的内置和预设插件制品，并在启动前执行兼容门禁。
+5. 壳只消费稳定的运行结果。workflow 负责进程和端口；React 不按 DSH 版本分支。
+6. 机器可读诊断和真实 frame 功能面矩阵验证启动图、设置页、延迟资源和侧栏贡献，不依赖人工点击。
+7. `dsh-desktop-control` 通过带令牌的回环控制面调用 Desktop 权威 service，输出结构化轨迹、延迟和失败码。它随独立 DSH 进程运行；Desktop 崩溃后仍可读取落盘轨迹并恢复外壳，恢复后的外壳接管原 Harness 进程。
 
-## Compatibility ownership
+## 兼容责任
 
-The core owns CLI syntax, readiness output, authentication, Host and Origin policy, public package exports, Loader semantics, slot declarations, RPC protocols, and durable session vocabulary. Desktop adapts to those contracts and must not weaken them to preserve an older integration.
+核心负责 CLI 语法、就绪输出、认证、Host 与 Origin 策略、公开包导出、Loader 语义、slot 声明、RPC 协议和持久化会话词汇。Desktop 必须适配这些契约，不能为了保留旧集成而削弱它们。
 
-Desktop owns core selection, process supervision, WebView navigation, product profile composition, plugin artifact selection, failure presentation, rollback, and compatibility diagnostics. A failure in these areas is a Desktop defect even when an upstream change exposed it.
+Desktop 负责核心选择、进程监管、WebView 导航、产品 profile 组合、插件制品选择、失败呈现、回滚和兼容诊断。即使某项上游更新暴露了这些问题，该范围内的失败仍属于 Desktop 缺陷。
 
-Plugin authors own imports from public DSH packages, declared peer dependencies, slot contribution timing, and feature behavior. Desktop can carry a versioned artifact while an upstream plugin release catches up, but a compiled-JavaScript rewrite is transitional debt rather than a permanent compatibility mechanism.
+插件作者负责使用公开 DSH 包、声明 peer dependencies、遵循 slot 贡献时序并保证功能行为。Desktop 可以在等待上游插件发布期间携带版本化制品，但改写编译后 JavaScript 只是过渡债务，不能成为永久兼容机制。
 
-## Version records
+## 版本记录
 
-| Target core | Web launch protocol | Plugin artifact set | Result | Record |
+| 目标核心 | Web 启动协议 | 插件制品集 | 结果 | 记录 |
 | --- | --- | --- | --- | --- |
-| `0.1.2-alpha.1` | `token-cookie-v1` | `dsh-v0.1.2-alpha.1` | Accepted with retained `0.1.1-rc.2` and recorded prerelease session limitation | [Adaptation record](./v0.1.2-alpha.1.md) |
+| `0.1.2-alpha.1` | `token-cookie-v1` | `dsh-v0.1.2-alpha.1` | 已通过并保留 `0.1.1-rc.2`，记录预发布会话限制 | [适配记录](./v0.1.2-alpha.1.md) |
 
-New records use `v<core-version>.md` and `v<core-version>.zh.md`. A record is immutable after its compatibility implementation ships except for factual corrections and links to a superseding record; later releases receive new files so architectural progress remains visible.
+适配记录只使用中文，文件名为 `v<核心版本>.md`。兼容实现发布后，版本记录除事实修正和后继记录链接外不再改写；后续版本新增文件，从而保留架构演进过程，避免双语同步消耗维护者和编码 Agent 的上下文预算。
 
-## Adaptation method
+## 适配方法
 
-1. Build and run the clean official target profile without Desktop plugins. Record its CLI arguments, stdout readiness signal, authentication exchange, Cookie policy, trusted-host source, browser Host-privilege decision, boot graph, settings namespaces, public client packages, slot declarations, RPC routes, and persisted-session behavior.
-2. Compare those observations with the newest accepted record. Classify each difference as an upstream contract change, a Desktop-owned integration defect, a plugin-owned incompatibility, or an intentional prerelease limitation.
-3. Add one exact core record and compose it from reusable protocol capabilities. Do not use open semver ranges or spread version conditions through workflow, React, profiles, or plugins.
-4. Rebuild Desktop-managed plugins from pinned sources into the exact version-named artifact set. Prefer source fixes and upstream releases; isolate any temporary artifact transformation and record its removal condition.
-5. Run static compatibility checks before launch, then execute the same runtime matrix against the new core and every retained core.
-6. Record measured evidence and remaining debt in the version file. Do not mark a release accepted from screenshots or a shell-only startup.
+1. 在不启用 Desktop 插件的情况下构建并运行干净的官方目标 profile。记录 CLI 参数、stdout 就绪信号、认证交换、Cookie 策略、可信 Host 来源、浏览器 Host 权限判定、启动图、设置命名空间、公开客户端包、slot 声明、RPC 路由和持久化会话行为。
+2. 将观察结果与最新已验收记录比较。把每项差异分类为上游契约更新、Desktop 自有集成缺陷、插件自有不兼容或预发布阶段的有意限制。
+3. 为核心增加一条精确记录，并由可复用协议能力组合该记录。不得使用开放 semver 范围，也不要把版本判断分散到 workflow、React、profile 或插件中。
+4. 从固定来源把 Desktop 管理的插件重建到以精确版本命名的制品集。优先修复源码并推动上游发布；任何临时制品转换都必须隔离并记录移除条件。
+5. 启动前运行静态兼容检查，再对新核心和所有保留核心执行同一套运行矩阵。
+6. 在版本文件中记录实测证据和剩余债务。不能根据截图或仅壳启动成功判定验收。
 
-## Acceptance standard
+## 验收标准
 
-A core is accepted only when the clean official profile starts, the Desktop product profile reaches a live Loader state, all declared managed plugins join the real boot graph, all declared lazy resources return success, settings and sidebar surfaces open without known failure signatures, failed operations preserve the shell, and switching to every retained core does not crash Desktop.
+只有干净官方 profile 能启动、Desktop 产品 profile 的 Loader 进入 live、全部声明的管理插件进入真实启动图、全部声明的延迟资源成功返回、设置与侧栏功能面打开时没有已知故障特征、失败操作不会破坏壳、切换到所有保留核心均不会导致 Desktop 崩溃时，核心才通过验收。
 
-`dsh-desktop-diagnostics snapshot` reports the selected slot, package version, source provenance, profile compatibility, and the latest frame reports. `pnpm diagnostics:select-core <version>` switches an installed test target through Tauri IPC and waits for health; `pnpm diagnostics:surface` then traverses the declared real-frame surfaces and exits nonzero on a failed assertion. Core packages and each plugin retain responsibility for their own domain mutations and end-to-end behavior.
+`dsh-desktop-diagnostics snapshot` 报告所选槽位、包版本、来源证明、profile 兼容性和最近的 frame 报告。`dsh-desktop-control` 内置插件可直接读取同一快照、运行并发压测、提取日志与 trace，并在壳崩溃后恢复它。`pnpm verify:feature-tests` 保证功能 command 与测试接口规约同步；`pnpm diagnostics:select-core <version>` 通过 Tauri IPC 切换已安装测试目标并等待健康；随后由 `pnpm diagnostics:surface` 遍历声明的真实 frame 功能面，并在断言失败时返回非零退出码。核心包和每个插件仍负责各自领域变更与端到端行为。
 
-## Long-term direction
+## 长期方向
 
-Adaptation cost should converge toward three bounded tasks: describe the new core protocol, build plugins against its public packages, and extend the compatibility matrix. Repeated edits to process lifecycle, React state, user profiles, or installed core files indicate an architecture defect and require a structural correction in the same adaptation.
+适配成本应逐渐收敛为三项有界工作：描述新核心协议、针对公开包构建插件、扩展兼容矩阵。如果每次都需要修改进程生命周期、React 状态、用户 profile 或已安装核心文件，就说明架构仍有缺陷，必须在同一次适配中完成结构修正。
 
-Desktop now rejects every core without an exact tested record and exposes its Web launch protocol, client ABI, slot protocol, session format and plugin artifact set through diagnostics. The intended next step is an upstream packaged capability manifest carrying these declarations; the exact version record remains provenance and the acceptance-matrix key.
+Desktop 现在拒绝所有没有精确测试记录的核心，并通过诊断暴露 Web 启动协议、客户端 ABI、slot 协议、会话格式和插件制品集。下一步目标是让上游打包制品携带这些能力声明；精确版本记录继续作为来源证明和验收矩阵键。
