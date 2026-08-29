@@ -45,6 +45,7 @@
 - 🖥️ **Config** — One dialog for Debug / Profiles / Plugins / Core, with bilingual (zh/en) UI labels and dark-mode support.
 - 🗂️ **Profile isolation** — Profiles are isolated from each other in the config; plugins, patches, and settings stay independent and do not interfere.
 - 🧩 **Plugin management** — The plugin panel manages installed plugins; when something misbehaves it offers upgrade / uninstall entry points plus error details.
+- 🛡️ **Recoverable system actions** — Folders, downloads, external links, and installers are validated before opening; failures stay inside Desktop as actionable errors instead of system dialogs or app termination.
 - 🎁 **Built-in plugins** — Ships with bundled plugins; more high-quality built-in plugins are coming in the future.
 - 🪶 **Native & lightweight** — A Tauri 2 shell (not Electron): smaller installers, lower memory, native windows.
 - ⌨️ **CLI integration** — Install automatically registers the `dsh` command, ready in a new terminal; does not overwrite your existing shell config.
@@ -94,6 +95,10 @@ The first run downloads the Node runtime and Harness core (if `dsh` is already i
 
 Want to get involved in development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
+To test an unpublished Harness checkout, run `pnpm local:build` in the `deepseek-harness-pkg` repository, then run `pnpm local:serve` in another terminal. The default version and source live in `src-tauri/resources/dsh-distribution.json`; `DSH_DESKTOP_VERSION` and `DSH_DESKTOP_MANIFEST_URL` override them at runtime. Manifest HTTP URLs are restricted to loopback hosts.
+
+Use `pnpm tauri build --no-bundle` for a production Desktop smoke test. A bare `cargo build --release` does not enable Tauri's production asset protocol, so the build gate rejects it instead of producing an invalid release executable that attempts to connect to `http://localhost:1420`.
+
 ## How It Works
 
 ```text
@@ -107,6 +112,7 @@ Want to get involved in development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMEN
 │ Tauri Rust backend                           │
 │   service/download  installer + extraction   │
 │   service/core      Harness core versions    │
+│   service/dsh_adapter upstream compatibility │
 │   service/profile   dsh profile management   │
 │   service/plugin    plugin remove / upgrade  │
 │   service/cli       dsh command shim + PATH  │
@@ -118,13 +124,15 @@ Want to get involved in development? See [docs/DEVELOPMENT.md](./docs/DEVELOPMEN
   runtime/ (Node.js v22.22.0)   dependencies/dsh/ (prebuilt bundle)
        └─────────────┬─────────────┘
                      ▼
-   dsh --profile <profile> --host 127.0.0.1 --port 3080
+   dsh --profile <profile> [--patch Desktop adapter] --host 127.0.0.1 --port 3080
                      │  DSH_HOME=~/.dsh
                      ▼
         http://127.0.0.1:3080/  ← embedded UI
 ```
 
 The prebuilt Harness bundle is published by [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg). Every launch compares against the latest release and prompts you to download the update when the local one is outdated — keeping the local install when GitHub is unreachable. A local core installed globally via the CLI is preferred when present.
+
+Desktop creates `product-zlzhg` as a clean product baseline. It stacks only the official `dsh-base` and `dsh-web-app` bundles. `service/dsh_adapter.rs` selects an app-owned overlay for version differences without writing to the profile or modifying the DSH installation. Desktop extensions are excluded from normal builds and are never installed or enabled during launch; set `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` explicitly to package them as optional resources. The WebView uses the same-site `dsh.tauri.localhost` subdomain for the official strict authentication cookie while avoiding Tauri's own `tauri.localhost` asset protocol; DSH still listens on `127.0.0.1`, which external browsers continue to use. See [DSH adapter evolution](./docs/dsh-adapters/README.md) for the architecture and version records.
 
 ## Notes
 

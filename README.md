@@ -39,6 +39,7 @@
 </table>
 
 - 🧩 **插件管理** — 插件面板管理已安装插件，出现异常时提供升级 / 卸载入口，错误详情。
+- 🛡️ **可恢复的系统操作** — 打开目录、下载位置、外部链接或安装包前验证目标；失败时留在 Desktop 内提示，不触发系统错误框或中断应用。
 - 🎁 **内置插件** — 随安装包内置插件，以及将来引入更多高质量的内置插件。
 - 🪶 **原生轻量** — Tauri 2 外壳（非 Electron）：更小的安装包、更低的内存占用、原生窗口。
 - ⌨️ **命令行集成** — 安装自动注册 `dsh` 命令，新开终端即用；不覆盖你已有 shell 配置。
@@ -93,6 +94,10 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 
 想参与开发？参见 [docs/DEVELOPMENT.zh.md](./docs/DEVELOPMENT.zh.md)。
 
+本地测试尚未发布的 Harness 源码时，在 `deepseek-harness-pkg` 仓库运行 `pnpm local:build`，再在另一终端运行 `pnpm local:serve`。默认版本与来源位于 `src-tauri/resources/dsh-distribution.json`；运行时可用 `DSH_DESKTOP_VERSION` 与 `DSH_DESKTOP_MANIFEST_URL` 覆盖，manifest HTTP 地址仅允许回环主机。
+
+正式验证桌面端请使用 `pnpm tauri build --no-bundle`。裸执行 `cargo build --release` 不会启用 Tauri 的生产资源协议，因此构建门禁会直接拒绝该命令，避免产出尝试连接 `http://localhost:1420` 的无效正式程序。
+
 ## 工作原理
 
 ```text
@@ -106,6 +111,7 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 │ Tauri Rust 后端                              │
 │   service/download  安装器 + 解压            │
 │   service/core      Harness 核心多版本管理   │
+│   service/dsh_adapter 上游版本适配           │
 │   service/profile   dsh 档案管理             │
 │   service/plugin    插件卸载 / 升级          │
 │   service/cli       dsh 命令 shim + PATH     │
@@ -117,13 +123,15 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
   runtime/ (Node.js v22.22.0)   dependencies/dsh/ (发行版)
        └─────────────┬─────────────┘
                      ▼
-   dsh --profile <档案> --host 127.0.0.1 --port 3080
+   dsh --profile <档案> [--patch Desktop适配层] --host 127.0.0.1 --port 3080
                      │  DSH_HOME=~/.dsh
                      ▼
         http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
 Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时提醒下载更新；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
+
+Desktop 会创建 `product-zlzhg` 档案作为干净的产品基线。该档案只叠加官方 `dsh-base` 与 `dsh-web-app`；版本差异由 `service/dsh_adapter.rs` 选择应用私有 overlay，不写入 profile，也不修改 DSH 安装目录。Desktop 扩展默认不进入构建产物、不在启动时安装或启用；只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 才会预打包为可选资源。WebView 使用 `dsh.tauri.localhost` 同站点子域承接官方严格认证 cookie，并避开 Tauri 自身的 `tauri.localhost` 资源协议；实际 DSH 监听与外部浏览器地址仍是 `127.0.0.1`。架构与逐版本记录见 [DSH 适配演进](./docs/dsh-adapters/README.zh.md)。
 
 ## 说明
 
