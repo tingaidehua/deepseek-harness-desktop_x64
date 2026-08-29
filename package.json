@@ -9,6 +9,7 @@
     "dev": "vite",
     "prebuild": "tsx scripts/prebuild.ts",
     "build": "tsc && vite build && pnpm prebuild",
+    "diagnostics:surface": "node scripts/dsh-surface-matrix.mjs",
     "preview": "vite preview",
     "tauri": "tsx scripts/predev.ts",
     "release": "bumpp --pr",
