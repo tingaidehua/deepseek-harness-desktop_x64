@@ -658,16 +658,16 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             _ => {}
         });
 
-    // 单例模式：多次双击图标（或重复启动）时不会新开窗口，而是把
-    // 已存在的（可能已隐藏到托盘）主窗口调到前台，实现“单例 + 复用后台窗口”。
-    // 该回调在首次启动时也会以当前进程的参数触发一次（幂等，仅 show/focus），
-    // 之后每次二次启动都会派发到这里，重新展示后台运行的主窗口。
-    // 仅在生产环境（release）启用：debug 开发调试时若启用单例，
-    // 二次启动的调试进程会被吞掉（例如 tauri dev 多实例调试），
-    // 因此开发环境跳过该插件。
-    #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        crate::utils::show_main_window(app);
+    // 单例锁覆盖 debug、release 和安装版；它们共享应用标识和数据目录，允许并行
+    // 会造成控制端点、Harness 所有权和 WebView 认证相互覆盖。自动压测探针只验证
+    // 锁，不反复抢占前台；普通重复启动仍唤醒已隐藏的主窗口。
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        if args.iter().any(|arg| arg == "--single-instance-probe") {
+            log::debug!("[single-instance] rejected automation probe");
+        } else {
+            log::info!("[single-instance] reusing the existing Desktop process");
+            crate::utils::show_main_window(app);
+        }
     }));
 
     builder

@@ -19,6 +19,7 @@ const READ_ONLY_OPERATIONS = [
   'diagnostics.snapshot',
   'runtime.info',
   'runtime.health',
+  'instance.info',
   'core.list',
   'profile.list',
   'logs.bundle',

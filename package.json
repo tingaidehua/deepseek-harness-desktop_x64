@@ -11,6 +11,7 @@
     "build": "tsc && vite build && pnpm prebuild",
     "diagnostics:select-core": "node scripts/dsh-select-core.mjs",
     "diagnostics:surface": "node scripts/dsh-surface-fixture.mjs && node scripts/dsh-surface-matrix.mjs",
+    "stress:single-instance": "node scripts/dsh-single-instance-stress.mjs",
     "verify:feature-tests": "node scripts/verify-feature-test-contracts.mjs",
     "preview": "vite preview",
     "tauri": "tsx scripts/predev.ts",

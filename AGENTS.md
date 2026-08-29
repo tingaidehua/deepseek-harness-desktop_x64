@@ -215,6 +215,7 @@ export function FooComponent(props: FooProps) {
 ## Backend Rules (Rust / Tauri)
 
 0. **功能测试接口规约**：每次新增、修改、重命名或删除 Desktop 功能，必须在同一提交中同步更新机器可调用的测试接口、结构化断言和 `src-tauri/resources/feature-test-contracts.json`。功能验证不得只依赖人工点击或 computer-use；外部控制面必须输出可关联的 trace id、耗时、失败码和持久化日志。运行 `pnpm verify:feature-tests` 拒绝未登记或已删除但仍残留的 Tauri command。控制面只调用权威 service，不复制业务逻辑；有副作用的操作必须显式列入白名单。Desktop 崩溃后，独立 DSH 进程及其 `dsh-desktop-control` 内置插件必须仍能读取轨迹并恢复外壳。
+   单例、启动、退出、恢复和核心切换等生命周期变更还必须提供并发或重复调用压测；测试不得通过启动 debug/release 双实例规避单例锁。
 1. **Comments**: Chinese only; `//!` for module headers, `///` for functions (focus on "why").
 2. **Errors/Logs**: `Result<_, String>` errors need an uppercase prefix (e.g. `NODE_NOT_FOUND: ...`); log key paths.
 3. **Settings**: new `Setting` fields need `#[serde(default...)]` and export in `config/mod.rs`.

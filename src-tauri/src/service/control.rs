@@ -92,7 +92,7 @@ pub fn trace_path(app_handle: &AppHandle) -> PathBuf {
         .join("desktop-control-trace.jsonl")
 }
 
-fn operation_catalog() -> [OperationDescription; 10] {
+fn operation_catalog() -> [OperationDescription; 11] {
     [
         OperationDescription {
             id: "control.catalog",
@@ -113,6 +113,11 @@ fn operation_catalog() -> [OperationDescription; 10] {
             id: "runtime.health",
             mutating: false,
             description: "检查当前 DSH 服务健康状态",
+        },
+        OperationDescription {
+            id: "instance.info",
+            mutating: false,
+            description: "读取单例进程身份和构建类型",
         },
         OperationDescription {
             id: "core.list",
@@ -302,6 +307,13 @@ async fn dispatch(app_handle: AppHandle, operation: &str, args: &Value) -> Resul
                 json!({ "message": crate::service::workflow::proxy_health_check(&app_handle, port).await? }),
             )
         }
+        "instance.info" => Ok(json!({
+            "singleInstance": true,
+            "pid": std::process::id(),
+            "executable": std::env::current_exe().unwrap_or_default(),
+            "debug": cfg!(debug_assertions),
+            "identifier": app_handle.config().identifier,
+        })),
         "core.list" => serde_json::to_value(crate::service::core::list(&app_handle).await)
             .map_err(|error| format!("CONTROL_SERIALIZE: {error}")),
         "profile.list" => serde_json::to_value(crate::service::profile::list(&app_handle))

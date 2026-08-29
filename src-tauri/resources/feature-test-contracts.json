@@ -14,7 +14,13 @@
         "proxy_health_check",
         "runtime_ready"
       ],
-      "controlOperations": ["runtime.health", "runtime.info", "logs.bundle", "desktop.exit"]
+      "controlOperations": [
+        "runtime.health",
+        "runtime.info",
+        "instance.info",
+        "logs.bundle",
+        "desktop.exit"
+      ]
     },
     {
       "id": "plugin-management",
