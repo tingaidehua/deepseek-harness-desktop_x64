@@ -109,7 +109,12 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     }];
 
     // 激活的预打包信息：tag（可空，旧安装无记录）+ 安装目录状态
-    let active_tag = config::get_dsh_pkg_tag(app_handle);
+    // `active-core` 是运行时选择的唯一权威 tag。`dsh_pkg_tag` 只记录最近一次发行版
+    // 下载来源，旧安装或本地打包可能保留另一版本，不能据此重命名活动槽位。
+    let active_tag = active_app_tag(
+        config::get_active_dsh_slot(app_handle),
+        config::get_dsh_pkg_tag(app_handle),
+    );
     let active_dir = config::get_dsh_install_path(app_handle);
     let active_present = config::get_dsh_binary_path(app_handle).exists();
     // 激活核心按「版本」而非 tag 匹配版本行：pkg 仓库会对同一版本重打包/打
@@ -517,7 +522,10 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
     // 路径安全：tag 需通过字符集白名单（tag 形如 `dsh-0.1.0-rc.8-<commit>`），
     // 拒绝 `..`、分隔符等，防止 `remove_core("app-..")` 把目标推出依赖根目录。
     fs_guard::validate_id(tag)?;
-    let cur_tag = config::get_dsh_pkg_tag(app_handle);
+    let cur_tag = active_app_tag(
+        config::get_active_dsh_slot(app_handle),
+        config::get_dsh_pkg_tag(app_handle),
+    );
     if cur_tag.as_deref() == Some(tag) && active_source(app_handle) == CoreSource::App {
         return Err(format!(
             "CORE_ACTIVE_VERSION: cannot remove in-use version {tag}"
@@ -543,6 +551,10 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
 
 /// 解析激活预打包核心的版本号：优先记录 tag（`dsh-<version>-<commit>`），
 /// 解析不出（无 tag 记录/格式不符）时用安装目录清单版本兜底。
+fn active_app_tag(active_slot: Option<String>, recorded_release: Option<String>) -> Option<String> {
+    active_slot.or(recorded_release)
+}
+
 fn active_app_version(
     active_tag: &Option<String>,
     manifest_version: Option<String>,
@@ -559,7 +571,12 @@ fn active_app_version(
 
 /// 构造某个已下载 tag 的核心行（下载完成/已存在时返回）。
 fn row_for_tag(app_handle: &AppHandle, tag: &str, dir: &Path) -> HarnessCore {
-    let active = config::get_dsh_pkg_tag(app_handle).as_deref() == Some(tag)
+    let active = active_app_tag(
+        config::get_active_dsh_slot(app_handle),
+        config::get_dsh_pkg_tag(app_handle),
+    )
+    .as_deref()
+        == Some(tag)
         && active_source(app_handle) == CoreSource::App;
     let dir_str = dir.to_string_lossy().into_owned();
     HarnessCore {
@@ -649,6 +666,27 @@ mod tests {
                 Some("0.1.1-rc.2".to_string()),
             ),
             Some("0.1.1-rc.2".to_string())
+        );
+    }
+
+    #[test]
+    fn active_slot_wins_over_stale_recorded_release_tag() {
+        assert_eq!(
+            active_app_tag(
+                Some("dsh-0.1.2-alpha.1-source".to_string()),
+                Some("dsh-0.1.1-rc.2-release".to_string()),
+            ),
+            Some("dsh-0.1.2-alpha.1-source".to_string())
+        );
+        assert_eq!(
+            active_app_version(
+                &active_app_tag(
+                    Some("dsh-0.1.2-alpha.1-source".to_string()),
+                    Some("dsh-0.1.1-rc.2-release".to_string()),
+                ),
+                Some("0.1.2-alpha.1".to_string()),
+            ),
+            Some("0.1.2-alpha.1".to_string())
         );
     }
 }

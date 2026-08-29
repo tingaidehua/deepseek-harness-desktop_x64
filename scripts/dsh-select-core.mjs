@@ -69,6 +69,14 @@ async function evaluate(expression, allowFailure = false) {
 }
 
 const cores = await evaluate('globalThis.__TAURI_INTERNALS__.invoke("get_cores")')
+for (const compatibility of compatibilityRecords) {
+  const retained = cores.filter(item => item.source === 'app' && item.version === compatibility.coreVersion)
+  if (retained.length !== 1 || !retained[0].present) {
+    throw new Error(
+      `CORE_SELECT_RETAINED_SET_MISMATCH: version=${compatibility.coreVersion}; rows=${retained.length}; present=${retained[0]?.present === true}`,
+    )
+  }
+}
 const core = cores.find(item => item.version === requestedVersion && item.present)
 if (!core)
   throw new Error(`CORE_SELECT_NOT_INSTALLED: ${requestedVersion}`)
@@ -90,7 +98,14 @@ if (health === undefined)
 const diagnostics = await evaluate('globalThis.__TAURI_INTERNALS__.invoke("get_diagnostics_snapshot")')
 if (diagnostics.core.version !== requestedVersion)
   throw new Error(`CORE_SELECT_VERSION_MISMATCH: requested=${requestedVersion}; active=${diagnostics.core.version}`)
-console.log(JSON.stringify({ selected: core, health, coreCompatibility: requestedCompatibility }, null, 2))
+const afterCores = await evaluate('globalThis.__TAURI_INTERNALS__.invoke("get_cores")')
+const activeCores = afterCores.filter(item => item.active)
+if (activeCores.length !== 1 || activeCores[0].version !== requestedVersion) {
+  throw new Error(
+    `CORE_SELECT_ACTIVE_LIST_MISMATCH: requested=${requestedVersion}; rows=${activeCores.length}; listed=${activeCores[0]?.version}`,
+  )
+}
+console.log(JSON.stringify({ selected: activeCores[0], health, coreCompatibility: requestedCompatibility }, null, 2))
 await evaluate('location.reload(); true', true)
 await new Promise(resolve => setTimeout(resolve, 1_500))
 socket.close()

@@ -163,6 +163,22 @@ function record(id, ok, detail) {
   checks.push({ id, ok, detail })
 }
 
+const cores = await evaluateApp('globalThis.__TAURI_INTERNALS__.invoke("get_cores")')
+for (const version of contracts.coreVersions) {
+  const rows = cores.filter(core => core.source === 'app' && core.version === version)
+  record(
+    `core.catalog.${version}`,
+    rows.length === 1 && rows[0].present,
+    `rows=${rows.length}; present=${rows[0]?.present === true}`,
+  )
+}
+const activeCores = cores.filter(core => core.active)
+record(
+  'core.catalog.active-identity',
+  activeCores.length === 1 && activeCores[0].version === diagnostics.core.version,
+  `activeRows=${activeCores.length}; listed=${activeCores[0]?.version}; runtime=${diagnostics.core.version}`,
+)
+
 const bootstrap = await evaluate('({ loader: globalThis.__ModuleLoader__?.mode, ownsHost: globalThis.__DSH_TRANSPORT__?.ownsHost === true })')
 record('web.loader-live', bootstrap.loader === 'live', `mode=${bootstrap.loader}`)
 record(
