@@ -1,15 +1,80 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
 
 const DSH_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DSH_MAX_BACKUPS: usize = 3;
 static DSH_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DSH_AUTHENTICATED_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 fn dsh_log_lock() -> &'static Mutex<()> {
     DSH_LOG_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn authenticated_url_slot() -> &'static RwLock<Option<String>> {
+    DSH_AUTHENTICATED_URL.get_or_init(|| RwLock::new(None))
+}
+
+/// 清除上一进程的一次性浏览器认证地址。
+pub(super) fn clear_authenticated_service_url() {
+    *authenticated_url_slot()
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
+/// 返回当前 DSH 进程为指定端口发布的一次性浏览器认证地址。
+pub(crate) fn authenticated_service_url(port: u16) -> Option<String> {
+    let url = authenticated_url_slot()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()?;
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    (parsed.port_or_known_default() == Some(port)).then_some(url)
+}
+
+/// 返回供 Tauri iframe 使用的同站点认证地址。
+///
+/// 官方 DSH 认证 cookie 是 `HttpOnly; SameSite=Strict`。将回环 IP 仅在 WebView
+/// 导航地址中改为 `dsh.tauri.localhost`，可使它与壳的 `http://tauri.localhost`
+/// 同站，又避免 Tauri 把 iframe 误判为自身资源；系统浏览器与健康检查仍使用
+/// 原始 `127.0.0.1` 地址。
+pub(crate) fn authenticated_webview_url(port: u16) -> Option<String> {
+    let url = authenticated_service_url(port)?;
+    let mut parsed = reqwest::Url::parse(&url).ok()?;
+    parsed.set_host(Some("dsh.tauri.localhost")).ok()?;
+    Some(parsed.to_string())
+}
+
+/// 捕获新版 DSH 的浏览器认证地址，并返回可安全持久化的脱敏日志行。
+fn capture_authenticated_service_url(line: &str) -> String {
+    let Some(candidate) = line
+        .strip_prefix("dsh web: ")
+        .and_then(|rest| rest.split_whitespace().next())
+    else {
+        return line.to_string();
+    };
+    let Ok(mut url) = reqwest::Url::parse(candidate) else {
+        return line.to_string();
+    };
+    let loopback = url.host_str().is_some_and(|host| {
+        host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
+    let has_token = url
+        .query_pairs()
+        .any(|(key, value)| key == "token" && !value.is_empty());
+    if !loopback || !has_token {
+        return line.to_string();
+    }
+    *authenticated_url_slot()
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(candidate.to_string());
+    url.set_query(None);
+    format!(
+        "dsh web: {} (authenticated URL captured by Desktop)",
+        url.as_str()
+    )
 }
 
 /// 构造仅用于回环地址探测的 HTTP 客户端。
@@ -24,16 +89,35 @@ pub(super) fn loopback_http_client(timeout: Duration) -> Result<reqwest::Client,
         .build()
 }
 
-/// 客户端插件 bundle 探测地址。
+/// 从启动页提取带当前 revision 的客户端插件 bundle 探测地址。
 ///
 /// SPA `/` 在 webServer 绑定后立刻 200，此时连接桥与 Loader 图往往还没就绪；
-/// WebView 若在这个窗口加载，会永久停在官方 boot 页 “Loading plugins…”。
-/// 必须等到真实 JS bundle（而非 HTML fallback）可取，才视为可挂载 iframe。
-pub(super) fn health_probe_plugin_urls(port: u16) -> Vec<String> {
-    vec![
-        format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-ui-layout/client.js"),
-        format!("http://127.0.0.1:{port}/plugins/@deepseek-ai/dsh-client-runtime/client.js"),
-    ]
+/// WebView 若在这个窗口加载，会永久停在官方 boot 页 “Loading plugins…”。新版
+/// DSH 只接受启动页声明的 revision URL，无 revision 的固定插件地址会返回 404。
+/// 必须读取当前启动页并取得真实 JS bundle，才视为可挂载 iframe。
+pub(super) fn health_probe_plugin_urls(port: u16, boot_html: &str) -> Vec<String> {
+    const PROBE_PACKAGES: [&str; 2] = [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-layout",
+    ];
+
+    PROBE_PACKAGES
+        .iter()
+        .filter_map(|package| {
+            // RC 使用单包路由 `/plugins/<pkg>/client.js`，alpha.1 使用可合并路由
+            // `/plugins/??<pkg>/client.js`。两者都从启动页读取真实 revision，避免
+            // 猜测固定 URL；未来协议只需在适配器测试夹具中增加声明形式。
+            let merged = format!("/plugins/??{package}/client.js");
+            let single = format!("/plugins/{package}/client.js");
+            let start = boot_html
+                .find(&merged)
+                .or_else(|| boot_html.find(&single))?;
+            let tail = &boot_html[start..];
+            let end = tail.find('"')?;
+            let path = tail[..end].replace("&amp;", "&");
+            Some(format!("http://127.0.0.1:{port}{path}"))
+        })
+        .collect()
 }
 
 /// 判断健康检查响应是不是可用的插件 bundle。
@@ -105,8 +189,9 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::info!(target: "dsh", "{}", line);
-                        append_log(&log_path, &line);
+                        let safe_line = capture_authenticated_service_url(&line);
+                        log::info!(target: "dsh", "{}", safe_line);
+                        append_log(&log_path, &safe_line);
                     }
                     Err(e) => {
                         log::error!("Failed to read dsh stdout: {}", e);
@@ -124,8 +209,9 @@ where
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
-                        log::warn!(target: "dsh", "{}", line);
-                        append_log(&log_path, &line);
+                        let safe_line = capture_authenticated_service_url(&line);
+                        log::warn!(target: "dsh", "{}", safe_line);
+                        append_log(&log_path, &safe_line);
                     }
                     Err(e) => {
                         log::error!("Failed to read dsh stderr: {}", e);
@@ -221,6 +307,27 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    #[test]
+    fn captures_browser_auth_url_without_persisting_token_in_log_line() {
+        clear_authenticated_service_url();
+        let safe =
+            capture_authenticated_service_url("dsh web: http://127.0.0.1:4567/?token=secret-value");
+        assert_eq!(
+            safe,
+            "dsh web: http://127.0.0.1:4567/ (authenticated URL captured by Desktop)"
+        );
+        assert_eq!(
+            authenticated_service_url(4567).as_deref(),
+            Some("http://127.0.0.1:4567/?token=secret-value")
+        );
+        assert_eq!(authenticated_service_url(4568), None);
+        assert_eq!(
+            authenticated_webview_url(4567).as_deref(),
+            Some("http://dsh.tauri.localhost:4567/?token=secret-value")
+        );
+        clear_authenticated_service_url();
+    }
+
     /// 模拟连续 5 次启动，验证磁盘上始终只保留最近 `keep` 份日志，
     /// 且每次启动都会新建当前日志文件。
     #[test]
@@ -254,15 +361,35 @@ mod tests {
     }
 
     #[test]
-    fn health_probe_plugin_urls_target_client_bundles_not_spa_root() {
-        let urls = health_probe_plugin_urls(3080);
+    fn health_probe_plugin_urls_use_revisions_declared_by_boot_html() {
+        let html = r#"<link href="/plugins/??one/client.js,@deepseek-ai/dsh-client-ui-layout/client.js&amp;rev=combined"><script src="/plugins/??@deepseek-ai/dsh-client-modules/client.js&amp;rev=modules"></script><script>globalThis.__DSH_BOOT__={"entries":[{"url":"/plugins/??@deepseek-ai/dsh-client-ui-layout/client.js&rev=layout"}]}</script>"#;
+        let urls = health_probe_plugin_urls(3080, html);
+        assert_eq!(
+            urls,
+            vec![
+                "http://127.0.0.1:3080/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=modules",
+                "http://127.0.0.1:3080/plugins/??@deepseek-ai/dsh-client-ui-layout/client.js&rev=layout",
+            ]
+        );
         assert!(urls.iter().all(|u| u.contains("/plugins/")));
-        assert!(urls
-            .iter()
-            .all(|u| !u.ends_with("3080/") && !u.ends_with("://127.0.0.1:3080")));
-        assert!(urls
-            .iter()
-            .any(|u| u.contains("dsh-client-ui-layout/client.js")));
+        assert!(urls.iter().all(|u| u.contains("&rev=")));
+    }
+
+    #[test]
+    fn health_probe_plugin_urls_reject_boot_html_without_probe_bundles() {
+        assert!(health_probe_plugin_urls(3080, "<!doctype html><html></html>").is_empty());
+    }
+
+    #[test]
+    fn health_probe_plugin_urls_accept_legacy_single_package_routes() {
+        let html = r#"<script src="/plugins/@deepseek-ai/dsh-client-modules/client.js?rev=modules"></script><script>globalThis.__DSH_BOOT__={"entries":[{"url":"/plugins/@deepseek-ai/dsh-client-ui-layout/client.js?rev=layout"}]}</script>"#;
+        assert_eq!(
+            health_probe_plugin_urls(3080, html),
+            vec![
+                "http://127.0.0.1:3080/plugins/@deepseek-ai/dsh-client-modules/client.js?rev=modules",
+                "http://127.0.0.1:3080/plugins/@deepseek-ai/dsh-client-ui-layout/client.js?rev=layout",
+            ]
+        );
     }
 
     #[test]

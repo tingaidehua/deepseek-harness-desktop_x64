@@ -1,12 +1,33 @@
 mod bridge;
 mod config;
 pub mod desktop;
+pub mod diagnostics;
 mod logger;
 mod service;
 mod task;
 mod utils;
 
+/// 为未通过安装器启动的 Windows 构建设置稳定的任务栏分组标识。
+#[cfg(windows)]
+fn set_windows_app_user_model_id() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    let id = std::ffi::OsStr::new("io.github.hairyf.deepseek-harness-desktop")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: id is a valid nul-terminated UTF-16 string and remains alive for the call.
+    let result = unsafe { SetCurrentProcessExplicitAppUserModelID(id.as_ptr()) };
+    if result < 0 {
+        eprintln!("[window] failed to set AppUserModelID: HRESULT 0x{result:08x}");
+    }
+}
+
 pub fn run() {
+    #[cfg(windows)]
+    set_windows_app_user_model_id();
+
     // Wayland EGL workaround: AppImage bundles WebKitGTK may fail with
     // "Could not create default EGL display: EGL_BAD_PARAMETER" on Wayland
     // compositors (PikaOS/GNOME Wayland, Ubuntu 22.04+). Host WebKit (deb)

@@ -92,6 +92,17 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
+/// 当前活动核心的包根目录。插件兼容检查与 CLI 子进程 cwd 必须和入口来自同一
+/// 核心，不能在选择本地核心后继续读取 Desktop 预打包槽位。
+pub fn active_core_dir(app_handle: &AppHandle) -> PathBuf {
+    match active_source(app_handle) {
+        CoreSource::Local => local_core(app_handle)
+            .map(|core| core.package_dir)
+            .unwrap_or_else(|| config::get_dsh_install_path(app_handle)),
+        CoreSource::App => config::get_dsh_install_path(app_handle),
+    }
+}
+
 /// 当前活动核心的版本号（`--no-open` 等按版本判定的能力以它为准）。
 pub fn active_version(app_handle: &AppHandle) -> Option<String> {
     match active_source(app_handle) {

@@ -236,7 +236,7 @@ async fn compute_update(
 /// `update_available=false`（未判定，由前端随后 `refresh_plugin_updates` 补齐）。
 pub fn apply_cache(app_handle: &AppHandle, plugins: &mut [DshPlugin]) {
     let specs = read_specs(app_handle);
-    let cache = cache().lock().unwrap();
+    let cache = cache().lock().unwrap_or_else(|error| error.into_inner());
     let now = Instant::now();
     for p in plugins.iter_mut() {
         let spec = specs.get(&p.id).cloned().unwrap_or_default();
@@ -275,7 +275,7 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
     let now = Instant::now();
     let mut tasks: Vec<Task> = Vec::new();
     {
-        let cache = cache().lock().unwrap();
+        let cache = cache().lock().unwrap_or_else(|error| error.into_inner());
         for (idx, p) in plugins.iter_mut().enumerate() {
             let spec = specs.get(&p.id).cloned().unwrap_or_default();
             let key = cache_key(&p.id, &spec, &p.version);
@@ -309,7 +309,7 @@ pub async fn refresh(app_handle: &AppHandle) -> Result<Vec<DshPlugin>, String> {
     }))
     .await;
 
-    let mut cache = cache().lock().unwrap();
+    let mut cache = cache().lock().unwrap_or_else(|error| error.into_inner());
     for (idx, key, info) in results {
         if let Some(p) = plugins.get_mut(idx) {
             p.update_available = info.update_available;

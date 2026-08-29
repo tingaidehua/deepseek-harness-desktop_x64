@@ -49,7 +49,7 @@ fn next_zoom_factor(current: f64, action: ZoomAction) -> f64 {
 fn persist_zoom_factor(app_handle: &AppHandle, zoom_factor: f64) -> Result<f64, String> {
     let zoom_factor = config::normalize_zoom_factor(zoom_factor);
     apply_zoom_factor(app_handle, zoom_factor)?;
-    let setting = config::set_store_dat_zoom_factor(app_handle, zoom_factor);
+    let setting = config::set_store_dat_zoom_factor(app_handle, zoom_factor)?;
     Ok(setting.zoom_factor)
 }
 
@@ -94,7 +94,7 @@ pub async fn update_app_config(
         if let Some(enabled) = cli_link_enabled {
             setting.cli_link_enabled = enabled;
         }
-    });
+    })?;
     Ok(setting)
 }
 
@@ -122,10 +122,10 @@ pub fn get_cli_link_status(app_handle: AppHandle) -> Result<cli::CliLinkStatus, 
 
 /// 保存界面语言偏好
 #[tauri::command]
-pub fn set_language(app_handle: AppHandle, lang: String) {
+pub fn set_language(app_handle: AppHandle, lang: String) -> Result<(), String> {
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.language = lang.clone();
-    config::set_store_dat_setting(&app_handle, setting);
+    config::set_store_dat_setting(&app_handle, setting)?;
     config::i18n::set_language(match lang.as_str() {
         "en" | "en-US" => config::i18n::Lang::En,
         _ => config::i18n::Lang::Zh,
@@ -134,6 +134,7 @@ pub fn set_language(app_handle: AppHandle, lang: String) {
     if let Err(error) = crate::desktop::builder::install_macos_menu(&app_handle) {
         log::warn!("[menu] failed to refresh macOS menu language: {error}");
     }
+    Ok(())
 }
 
 /// 切换侧边栏（布局状态保存在前端，保留该命令以对齐参考实现）

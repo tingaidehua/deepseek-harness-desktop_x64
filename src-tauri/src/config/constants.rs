@@ -61,8 +61,13 @@ pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 同时运行时互不干扰，也不会互相污染对方的会话数据。
 pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
 
-/// 安装目录与 CLI 入口（相对安装目录）
+/// 旧版固定核心目录。新安装使用 `dependencies/cores/<tag>` 不可变槽位；
+/// 此目录只作为升级迁移前的可用回退，不再参与版本互换。
 pub const DSH_CORE_DIR: &str = "dsh";
+/// Desktop 管理的不可变 Harness 核心槽位根目录。
+pub const DSH_CORE_SLOTS_DIR: &str = "cores";
+/// 当前活动不可变槽位的 tag 指针。文件缺失或内容无效时回退旧版固定目录。
+pub const DSH_ACTIVE_CORE_FILE: &str = "active-core";
 pub const DSH_ENTRY_RELATIVE: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 pub const DSH_MANIFEST_RELATIVE: &str = "package.json";
 

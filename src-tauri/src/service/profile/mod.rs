@@ -19,6 +19,9 @@ use tauri::AppHandle;
 /// 桌面端默认档案（内置，不可删除）
 pub const DEFAULT_PROFILE: &str = "web";
 
+/// 智疗产品档案：从官方 web 模板初始化，与用户现有 web 档案隔离。
+pub const ZLZHG_PRODUCT_PROFILE: &str = "product-zlzhg";
+
 /// 新建档案的初始 bundles：web 模板（`@deepseek-ai/dsh-base` +
 /// `@deepseek-ai/dsh-web-app`，与 dsh-app-boot `PROFILE_TEMPLATES.web` 一致）。
 /// 桌面端内嵌的是 dsh web 应用，新档案不带 `dsh-web-app` 将无法渲染任何界面。
@@ -26,6 +29,10 @@ const WEB_PROFILE_BUNDLES: [&str; 2] = ["@deepseek-ai/dsh-base", "@deepseek-ai/d
 
 /// dsh `initProfile` 生成的空 patch 层（与官方一致）
 const PROFILE_PATCH_TEMPLATE: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n";
+
+/// 早期 Desktop 直接写进产品 profile 的认证配置。适配层现已迁到应用私有
+/// `dsh-adapters/` overlay；只清理这一份精确内容，不触碰用户编辑过的 patch。
+const LEGACY_DESKTOP_PRODUCT_PATCH: &str = "# Desktop embeds the official web app through a same-site hostname so the\n# official HttpOnly SameSite=Strict authentication cookie remains valid.\n- id: connection\n  config:\n    trustedHosts: !!js \"['tauri.localhost', ...ctx.webRuntime.trustedHosts]\"\n";
 
 /// dsh `initProfile` 生成的 pnpm 设置（与官方一致）
 const PROFILE_PNPM_WORKSPACE: &str =
@@ -50,6 +57,23 @@ pub fn profile_dir_of(app_handle: &AppHandle, id: &str) -> PathBuf {
     config::get_dsh_data_path(app_handle)
         .join("profiles")
         .join(id)
+}
+
+/// 确保智疗产品档案存在，并保持官方 web profile 的用户 patch 语义。
+pub fn ensure_zlzhg_product_profile(app_handle: &AppHandle) -> Result<(), String> {
+    let dir = profile_dir_of(app_handle, ZLZHG_PRODUCT_PROFILE);
+    init_profile_dir(&dir, ZLZHG_PRODUCT_PROFILE)?;
+
+    // 迁移本任务早期生成的 Desktop 专用 patch；今后适配配置由应用私有 overlay
+    // 提供，profile 的用户 patch 不再承担宿主兼容职责。
+    let patch_path = dir.join("cordis.patch.yml");
+    let existing =
+        fs::read_to_string(&patch_path).map_err(|e| format!("PROFILE_PATCH_READ: {e}"))?;
+    if existing == LEGACY_DESKTOP_PRODUCT_PATCH {
+        fs::write(&patch_path, PROFILE_PATCH_TEMPLATE)
+            .map_err(|e| format!("PROFILE_PATCH_WRITE: {e}"))?;
+    }
+    Ok(())
 }
 
 /// 当前使用的档案 id。
@@ -194,7 +218,7 @@ pub fn set_active(app_handle: &AppHandle, id: &str) -> Result<Profile, String> {
     }
     let mut setting = config::get_store_dat_setting(app_handle);
     setting.active_profile = id.to_string();
-    config::set_store_dat_setting(app_handle, setting);
+    config::set_store_dat_setting(app_handle, setting)?;
     list(app_handle)
         .into_iter()
         .find(|p| p.id == id)
@@ -330,6 +354,12 @@ mod tests {
         assert_eq!(npmrc, npmrc2);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_product_patch_is_recognized_without_desktop_plugins() {
+        assert!(LEGACY_DESKTOP_PRODUCT_PATCH.contains("- id: connection"));
+        assert!(!LEGACY_DESKTOP_PRODUCT_PATCH.contains("dsh-tauri"));
     }
 
     /// 路径穿越回归：`..`、`.`、绝对路径、含分隔符的 id 一律在 remove 前被拦截，

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-use super::preset::{load_presets, PreinstallPluginInfo};
+use super::preset::{load_presets, provided_by_active_core, PreinstallPluginInfo};
 
 /// 用于强类型解析 profile 下 package.json 的辅助结构
 /// （字段 pub(crate)：供 watch 模块解析已安装插件清单复用）
@@ -107,7 +107,8 @@ pub fn list(app_handle: &AppHandle) -> Vec<PreinstallPlugin> {
         .map(|p| {
             // 已安装检测以实际 npm 包名为准：预设可显式声明 package（scoped 包
             // 名与预设 id 不一致时），未声明则回落到 id。
-            let is_installed = installed.contains(installed_name(&p));
+            let is_installed = installed.contains(installed_name(&p))
+                || provided_by_active_core(app_handle, &p.id);
             PreinstallPlugin {
                 id: p.id,
                 name: p.name,

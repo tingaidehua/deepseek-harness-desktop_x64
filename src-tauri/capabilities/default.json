@@ -4,7 +4,7 @@
   "description": "Capability for the main window and embedded Harness GUI. The remote Harness origin is restricted to loopback, while the shell validates every cross-origin postMessage before servicing bridge requests. The service port is NOT fixed: it defaults to 3080/3081 but is user-configurable and advances to the next free port when the default is occupied (service/workflow::find_available_port).",
   "windows": ["main"],
   "remote": {
-    "urls": ["http://127.0.0.1:*"]
+    "urls": ["http://127.0.0.1:*", "http://dsh.tauri.localhost:*"]
   },
   "permissions": [
     "core:default",

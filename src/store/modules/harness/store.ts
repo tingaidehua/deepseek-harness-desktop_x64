@@ -20,6 +20,7 @@ import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
 import { containsInotifyLimitError, pickErrorLines } from '@/utils/log'
 import { pollReadiness } from '@/utils/readiness'
+import { toast } from '@/utils/toast'
 import { harnessUpdater } from '../harness-updater'
 
 const MAX_RETRIES = 8
@@ -63,6 +64,16 @@ function generateTimestampedUrl(baseUrl: string): string {
   const timestamp = Date.now()
   const separator = baseUrl.includes('?') ? '&' : '?'
   return `${baseUrl}${separator}t=${timestamp}`
+}
+
+interface RuntimeServiceInfo {
+  service_url: string
+  webview_url?: string | null
+}
+
+/** 认证地址只用于 iframe；设置页与复制操作继续展示不含凭据的服务地址。 */
+function webviewUrlOf(info: RuntimeServiceInfo): string {
+  return info.webview_url || info.service_url
 }
 
 /** 通过 Rust 代理探测服务健康状态（超时 8s，网络抖动时重试） */
@@ -275,12 +286,17 @@ export const harness = defineStore({
 
     /** 服务探测通过后的统一收尾；token 用于阻止旧启动流程覆盖新状态 */
     async completeReadiness(token?: number): Promise<boolean> {
-      const readyInfo = await invoke<{ service_url: string }>('get_runtime_info')
+      const readyInfo = await invoke<RuntimeServiceInfo>('get_runtime_info')
       if (token !== undefined && token !== bootToken)
         return false
 
       this.serviceUrl = readyInfo.service_url
-      this.iframeSrc = generateTimestampedUrl(readyInfo.service_url)
+      this.iframeSrc = generateTimestampedUrl(webviewUrlOf(readyInfo))
+      // WebView2 的网络错误文档不会可靠响应 iframe src 更新。健康探测通过时
+      // 强制销毁启动早期的 ERR_CONNECTION_REFUSED 文档，再挂载真实页面。
+      this.iframeLoaded = false
+      this.iframeError = false
+      this.iframeKey++
       this.serviceHealthy = true
       this.serviceRunning = true
       this.status = 'ready'
@@ -349,9 +365,9 @@ export const harness = defineStore({
         await invoke('launch_harness')
         this.serviceRunning = true
         // 后端遇到端口占用时会自动递增并持久化端口，启动后重新读取真实地址。
-        const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
+        const runtimeInfo = await invoke<RuntimeServiceInfo>('get_runtime_info')
         this.serviceUrl = runtimeInfo.service_url
-        this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
+        this.iframeSrc = generateTimestampedUrl(webviewUrlOf(runtimeInfo))
 
         const result = await pollReadiness({
           probe: checkHealthViaProxy,
@@ -405,9 +421,9 @@ export const harness = defineStore({
         catch (err) {
           console.error('[Harness] failed to listen install-progress:', err)
         }
-        const runtimeInfo = await invoke<{ service_url: string }>('get_runtime_info')
+        const runtimeInfo = await invoke<RuntimeServiceInfo>('get_runtime_info')
         this.serviceUrl = runtimeInfo.service_url
-        this.iframeSrc = generateTimestampedUrl(runtimeInfo.service_url)
+        this.iframeSrc = generateTimestampedUrl(webviewUrlOf(runtimeInfo))
 
         // 已安装过则跳过安装界面，避免每次启动都闪现"正在安装依赖..."
         const config = await invoke<{
@@ -425,19 +441,6 @@ export const harness = defineStore({
           }
           await invoke('install_dependencies')
         }
-
-        // 内置插件自愈（独立于预装引导）：无论是否进入预装页、点不点「继续/跳过」，
-        // 都在启动阶段先把内置插件核对/安装到位——加载屏先显示「Loading internal
-        // plugins…」（此处乐观置位消除文案闪跳，后端 internal-plugins-phase 事件为
-        // 权威信号），确保「下一步先加载内部插件」。后端幂等且不阻断：失败仅告警。
-        this.internalLoading = true
-        try {
-          await invoke('ensure_internal_plugins')
-        }
-        catch (err) {
-          console.error('[Harness] ensure internal plugins failed (best-effort):', err)
-        }
-        this.internalLoading = false
 
         // 预装插件引导：首次安装、老版本升级（无指纹基线）或 preset-plugins.json
         // 内容变更（社区新增推荐插件）时重新进入预设流程，装完/跳过后才拉起服务。
@@ -640,6 +643,10 @@ export const harness = defineStore({
       }
       catch (err) {
         console.error('[Harness] open in browser failed:', err)
+        toast(i18next.t('app.open_browser_failed'), {
+          variant: 'danger',
+          description: i18next.t('errors.operation_skipped'),
+        })
       }
       finally {
         this.busyAction = null

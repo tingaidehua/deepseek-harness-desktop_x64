@@ -1,8 +1,8 @@
 //! 内置插件启动自愈：随安装包分发的内置插件（条目位于
 //! `internal-plugins.json`，产物目录 `resources/internal-plugins/<id>` 由构建期
-//! `scripts/prebuild.ts` 拉取）在服务启动前核对「是否已安装 + 安装路径是否仍
-//! 指向当前捆绑目录」：未安装 / 路径不正确 / 用户卸载后残留缺失 → 一律走常规
-//! 安装流程强制重装，保证桌面外壳依赖的桥接层（如 dsh-tauri）随包可用。
+//! `scripts/prebuild.ts` 拉取）在服务启动前核对核心兼容性、依赖声明和真实入口。
+//! 兼容插件固化到 profile 内的内容槽位后安装；不兼容插件返回可诊断错误，不进入
+//! DSH 启动配置。
 //!
 //! debug 构建可用仓库根 `.env` 的 `DEV_INTERNAL_PLUGINS_DIR` 把安装目标指到
 //! 本地插件源码（热更新迭代，见 [`super::preset::bundled_plugin_dir`]）。
@@ -17,7 +17,7 @@ use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
-use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
+use super::preset::{bundled_plugin_dir, load_presets, stage_bundled_plugin, PreinstallPluginInfo};
 
 /// 核对并强制安装缺失/路径不正确/被卸载的内置插件，在服务进程启动前调用。
 ///
@@ -105,9 +105,13 @@ async fn ensure_inner(
             continue;
         };
         let name = installed_name(preset).to_string();
-        let expected = bundled_dep_spec(&bundled);
-        // ① 依赖声明：未声明，或声明的值不再指向当前捆绑目录（路径变更/被改
-        // 写）→ 重装；② 依赖真实性：node_modules 链接/拷贝须真实存在（用户
+        super::compatibility::require_packaged_plugin_compatible(
+            &crate::service::core::active_core_dir(app_handle),
+            &bundled,
+        )?;
+        let expected = stage_bundled_plugin(&profile, &preset.id, &bundled)?;
+        // ① 依赖声明：未声明，或声明的值不再指向当前内容槽位 → 重装；
+        // ② 依赖真实性：node_modules 链接/拷贝须真实存在（用户
         // 手动清过 node_modules 时声明可能残留但产物已不在）→ 重装。
         let dep_ok = dependencies
             .get(&name)
@@ -118,10 +122,9 @@ async fn ensure_inner(
             log::info!(
                 "INTERNAL_PLUGIN_NEEDS_REINSTALL: {name}（dep_ok={dep_ok}, link_ok={link_ok}, expected={expected}）"
             );
-            // 应用升级会移动 `.app` 内的捆绑目录，旧 profile 可能留下指向上个
-            // 版本资源的悬空链接。pnpm 在处理这些入口时会在真正改写依赖前以
+            // 历史版本可能留下绝对链接或悬空入口。pnpm 在真正改写依赖前可能以
             // 254 退出；先只清理 node_modules 入口（绝不跟随链接删除目标），再
-            // 走常规 add，令 pnpm 从当前捆绑目录重建链接。
+            // 走常规 add，从当前内容槽位重建链接。
             need.push((preset.id.clone(), name, entry));
         }
     }
@@ -275,7 +278,7 @@ fn remove_stale_plugin_entry(entry: &Path) -> std::io::Result<()> {
     std::fs::remove_file(entry)
 }
 
-/// 判断 pnpm 写入 profile 的依赖值与期望的 `link:` 捆绑路径是否一致。
+/// 判断 pnpm 写入 profile 的依赖值与期望的 `link:` 路径是否一致。
 ///
 /// 容忍：`link:`/`file:` 前缀缺失或两者混写（历史遗留 `file:` 安装值）；Windows
 /// 下路径大小写不敏感；尾部斜杠差异（pnpm 各版本落盘形式略有出入）。
@@ -285,12 +288,8 @@ fn dep_matches_spec(actual: &str, expected: &str) -> bool {
             .strip_prefix("link:")
             .or_else(|| spec.strip_prefix("file:"))
             .unwrap_or(spec);
-        // 统一用 dunce 归一化 Windows 扩展长度路径前缀（`\\?\`）：
-        // 期望值已经由 bundled_dep_spec 归一化掉前缀；若历史命中的实值仍带
-        // `//?/` / `\\?\` 前缀，先归一再比对，保证幂等（避免旧值一次次触发
-        // 不必要的重装）。先把手写正斜杠的 verbatim 形式（`//?/`）换算成反斜杠
-        // （dunce 依赖 `\\?\` 识别 verbatim），再交给 dunce::simplified，最后
-        // 统一回正斜杠，与 bundled_dep_spec 的产出可比。
+        // 统一 Windows 扩展长度路径前缀和路径分隔符，避免 pnpm 各版本的落盘
+        // 表示差异触发不必要的重装。
         let backslash = stripped.replace('/', "\\");
         dunce::simplified(Path::new(&backslash))
             .to_string_lossy()

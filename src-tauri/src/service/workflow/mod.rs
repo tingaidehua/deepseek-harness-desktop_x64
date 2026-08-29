@@ -1,19 +1,14 @@
-pub(crate) mod client_hmr_patch;
-pub(crate) mod renderer_patch;
 pub mod status;
 pub mod utils;
 pub(crate) mod win_inspector;
 #[cfg(windows)]
 pub(crate) mod win_spawn;
-pub(crate) mod workspace_patch;
 
 use crate::config;
 use crate::service::download;
 use crate::service::workflow::utils::{is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
 
-#[cfg(windows)]
-use std::ffi::OsString;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,40 +155,6 @@ fn resolve_heal_port(configured: u16, heal_target: u16, heal_target_free: bool) 
         heal_target
     } else {
         configured
-    }
-}
-
-/// dsh 版本是否支持 `--no-open` 标志。
-///
-/// 0.1.0-rc.8 起 `dsh web` 默认在系统浏览器打开 UI（桌面端内嵌 WebView，
-/// 不希望每次启动都弹浏览器），并新增 `--no-open` 关闭该行为。更早的 rc
-/// 版本没有这个标志，commander 会把未知选项当作错误、导致 web profile
-/// 启动失败，因此追加标志前必须按已装版本判定：0.1.0-rc.8 及以上传标志；
-/// 更早不传（保持旧行为）。
-///
-/// 比较用 `semver` 库按完整语义化版本进行：只比 rc 序号会把基础版本更大的
-/// 新版本误判为旧版——`0.1.1-rc.1` 的 rc 号（1）虽小于 8，但晚于
-/// 0.1.0-rc.8，同样支持 `--no-open`（该误判是浏览器复弹的回归根因）。
-/// 版本号非法（无法解析）时保守处理：不追加标志。
-fn version_supports_no_open(version: &str) -> bool {
-    // 首个支持 `--no-open` 的 dsh 版本（0.1.0-rc.8）
-    const NO_OPEN_MIN_VERSION: &str = "0.1.0-rc.8";
-    let Ok(min) = semver::Version::parse(NO_OPEN_MIN_VERSION) else {
-        return false;
-    };
-    semver::Version::parse(version)
-        .map(|v| v >= min)
-        .unwrap_or(false)
-}
-
-/// 按当前活动核心的 dsh 版本决定是否追加 `--no-open`（见 [`version_supports_no_open`]）。
-///
-/// 版本以活动核心为准：本地核心（用户 CLI 安装）与预打包核心各自读自己的
-/// 包清单；读不到时保守处理：不追加标志。
-fn web_supports_no_open_flag(app_handle: &tauri::AppHandle) -> bool {
-    match crate::service::core::active_version(app_handle) {
-        Some(version) => version_supports_no_open(&version),
-        None => false,
     }
 }
 
@@ -663,7 +624,7 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         }
         let mut setting = config::get_store_dat_setting(&app_handle);
         setting.installed = false;
-        config::set_store_dat_setting(&app_handle, setting);
+        config::set_store_dat_setting(&app_handle, setting)?;
         // 状态变更需要 info 级落盘：这是「store 显示未安装」的源头之一
         // （核心文件短暂缺失被复位），自更新后自动重开走进安装分支多由此触发。
         log::info!("Runtime files missing (node/dsh), resetting installed flag");
@@ -721,6 +682,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         log::error!("Harness not installed");
         return Err("HARNESS_NOT_FOUND: Harness not installed".to_string());
     }
+    let adapter = crate::service::dsh_adapter::DshAdapter::active(&app_handle)?;
+    let adapter_overlay = adapter.prepare_overlay(&app_handle)?;
+    log::info!(
+        "DSH adapter selected: id={}, version={}, overlay={}",
+        adapter.id(),
+        adapter.version(),
+        adapter_overlay.is_some()
+    );
 
     // 避免重复启动（配合启动守卫，确保并发调用只拉起一个进程）
     if has_owned_process() {
@@ -749,7 +718,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             healed_port
         );
         setting.port = healed_port;
-        config::set_store_dat_setting(&app_handle, setting.clone());
+        config::set_store_dat_setting(&app_handle, setting.clone())?;
     }
 
     // 端口冲突时从当前值开始逐个递增，并持久化最终选择供所有调用方复用。
@@ -767,12 +736,13 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             available_port
         );
         setting.port = available_port;
-        config::set_store_dat_setting(&app_handle, setting.clone());
+        config::set_store_dat_setting(&app_handle, setting.clone())?;
     }
 
     // 构造环境变量：隔离的 $DSH_HOME + 隐私默认（关闭遥测）
     let dsh_home = config::get_dsh_data_path(&app_handle);
     fs::create_dir_all(&dsh_home).map_err(|e| format!("create dsh home failed: {e}"))?;
+    crate::service::profile::ensure_zlzhg_product_profile(&app_handle)?;
 
     // Linux 起步前探测 inotify 监视上限：harness 服务（dsh web）用 chokidar 递归
     // 监视 profile 目录，上限过低会在启动一瞬间抛 ENOSPC 直接退出（issue #116）。
@@ -781,28 +751,6 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(unix)]
     warn_if_inotify_watch_limit_low();
 
-    // Windows 极简模式修复的自愈：插件已装入 profile 时确保 patch 挂载行与
-    // minimal-win 用户 preset 落盘（幂等）。最佳努力：失败只告警，不阻断启动。
-    if let Err(e) = win_inspector::apply(&app_handle) {
-        log::warn!("win32 terminal support apply failed: {e}");
-    }
-    // renderer 的 SlotOutlet 一行导出补丁（dsh-tauri-ui 设置侧边栏依赖）：只补
-    // 活动核心的 dsh-client-ui-renderer lib/client.js，已含导出即跳过（幂等；核心
-    // 换版本后自动重打，上游官方导出后自动退休）。最佳努力：失败只告警，不阻断
-    // 启动——未打补丁时插件侧降级，官方设置 dialog 照常工作，绝不白屏。
-    if let Err(e) = renderer_patch::apply(&app_handle) {
-        log::warn!("renderer SlotOutlet patch failed: {e}");
-    }
-    // worktree 会话以隔离 cwd 执行，但产品归属仍是源 Workspace；放宽上游显式
-    // attach 的 cwd 相等约束，其他 cwd 有效性校验保持不变。最佳努力且幂等。
-    if let Err(e) = workspace_patch::apply(&app_handle) {
-        log::warn!("workspace worktree membership patch failed: {e}");
-    }
-    // 当前 DSH client-HMR 会卸载第三方插件却不重新挂载。debug 直接联接本地
-    // 插件源码，故将 rebuilt 降级为自动刷新页面；release 保持上游行为。
-    if let Err(e) = client_hmr_patch::apply(&app_handle) {
-        log::warn!("debug client plugin reload fallback patch failed: {e}");
-    }
     // 预防性处理：pnpm 在无 TTY 环境（dsh-market 等子进程）下重装/更新插件时，
     // 清理/重建 node_modules 会触发交互确认并因无 TTY 直接中止
     // （ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY），表现为插件更新失败。
@@ -811,12 +759,14 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
         log::warn!("ensure profile .npmrc failed: {e}");
     }
-    // 内置插件自愈：随包分发的内置插件（dsh-tauri 等）必须在服务进程加载插件
-    // 前就绪——核对「已安装 + 安装路径指向当前捆绑目录」，未安装、路径不正确
-    // 或用户卸载后重启，一律强制重装（见 service::plugin::internal）。最佳
-    // 努力：失败只告警，不阻断启动（核心功能缺失是发布缺陷，由 prebuild 报错）。
-    if let Err(e) = crate::service::plugin::ensure_internal_plugins(&app_handle).await {
-        log::warn!("ensure internal plugins failed: {e}");
+    // 核心选择只决定协议世代；Desktop 管理插件必须在启动前投影为该世代的
+    // 离线产物。失败时中止本次启动，不能让 Loader 载入混合依赖。
+    crate::service::plugin::rebind_for_active_core(&app_handle).await?;
+    // profile 只声明 bundle 与额外插件；DSH 制品自带的核心包必须由当前激活
+    // `dependencies/dsh` 提供。切换版本后若保留旧的 profile-local 核心包，会把
+    // 旧 React 模块表与新后端插件混装。先移除这些重复依赖并让 pnpm 清理旧产物。
+    if let Err(e) = crate::service::plugin::reconcile_shipped_dependencies(&app_handle).await {
+        log::warn!("reconcile profile with active DSH packages failed: {e}");
     }
     // 预装插件完整性自检：清单引用的预装插件若在 node_modules 缺失产物，服务
     // 启动时 loader 会对每个缺失插件抛 ERR_MODULE_NOT_FOUND 而整体失败（issue
@@ -826,6 +776,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
         log::warn!("ensure preset plugins failed: {e}");
     }
+    crate::service::plugin::compatibility::require_active_compatible(&app_handle)?;
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
         "DSH_HOME".to_string(),
@@ -908,10 +859,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")))
         .map_err(|e| format!("create log dir failed: {e}"))?;
     utils::rotate_service_log(&log_path, 3);
-
-    // rc.8 起 `dsh web` 默认在系统浏览器打开 UI；桌面端内嵌 WebView，不需要
-    // 浏览器，追加 `--no-open` 关闭（老版本无此标志时按版本判定不传）。
-    let no_open = web_supports_no_open_flag(&app_handle);
+    utils::clear_authenticated_service_url();
 
     log::info!("Starting Harness process");
 
@@ -919,24 +867,18 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
     // 因此 Windows 上改用“隐藏控制台”方式启动，见 win_spawn 模块。
     let active_profile = crate::service::profile::active_profile(&app_handle);
+    let launch_args = adapter.launch_args(
+        &dsh_binary_path,
+        &active_profile,
+        setting.port,
+        adapter_overlay.as_deref(),
+    );
     let spawn_result = {
         #[cfg(windows)]
         {
-            let mut args: Vec<OsString> = vec![
-                dsh_binary_path.as_os_str().to_os_string(),
-                OsString::from("--profile"),
-                OsString::from(active_profile.as_str()),
-                OsString::from("--host"),
-                OsString::from("127.0.0.1"),
-                OsString::from("--port"),
-                OsString::from(setting.port.to_string()),
-            ];
-            if no_open {
-                args.push(OsString::from("--no-open"));
-            }
             win_spawn::spawn_with_hidden_console_owned(
                 &node_binary_path,
-                &args,
+                &launch_args,
                 Some(&config::get_dsh_install_path(&app_handle)),
                 &envs,
             )
@@ -978,16 +920,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         {
             use std::os::unix::process::CommandExt;
             let mut cmd = Command::new(&node_binary_path);
-            cmd.arg(&dsh_binary_path)
-                .arg("--profile")
-                .arg(active_profile.as_str())
-                .arg("--host")
-                .arg("127.0.0.1")
-                .arg("--port")
-                .arg(&setting.port.to_string());
-            if no_open {
-                cmd.arg("--no-open");
-            }
+            cmd.args(&launch_args);
             cmd.envs(&envs)
                 .current_dir(config::get_dsh_install_path(&app_handle))
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
@@ -1045,6 +978,7 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 进程终止涉及 WaitForSingleObject（至多 5s）与 taskkill/kill 等同步阻塞
     // 调用，移出 Tokio 执行线程避免卡住其他并发任务（WARN-7/P2-#20）。
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
+    utils::clear_authenticated_service_url();
     tauri::async_runtime::spawn_blocking(terminate_owned_process)
         .await
         .map_err(|e| format!("STOP_FAILED: {e}"))?;
@@ -1173,8 +1107,15 @@ pub async fn install(
         // （mac 首次启动常见）仍能拿到真实下载地址，避免整次安装被瞬时失败卡死。
         // dsh 核心默认先走 GitHub 官方直连，失败自动切换 ghfast.top 镜像兜底
         // （下载层会在界面上告知用户）；其余任务保持单一官方源。
+        if index == 1 && dsh_latest.is_none() {
+            dsh_latest = Some(download::fetch_latest_dsh_pkg_info().await?);
+        }
         let (urls, name) = if index == 1 {
-            let urls = config::get_dsh_download_urls()?;
+            let asset_url = dsh_latest
+                .as_ref()
+                .map(|info| info.asset_url.clone())
+                .ok_or_else(|| "DSH_RELEASE_UNAVAILABLE: missing pinned release".to_string())?;
+            let urls = config::dsh_asset_download_urls(&asset_url);
             let name = urls
                 .first()
                 .and_then(|u| u.rsplit('/').next())
@@ -1248,7 +1189,15 @@ pub async fn install(
             "extract",
             &format!("{} {}", config::i18n::t("install.extracting"), task.title()),
         );
-        let dest = task.get_install_path(app_handle);
+        let dest = if index == 1 {
+            let tag = dsh_latest
+                .as_ref()
+                .map(|info| info.tag.as_str())
+                .ok_or_else(|| "DSH_RELEASE_UNAVAILABLE: missing pinned release".to_string())?;
+            config::get_dsh_slot_install_path(app_handle, tag)
+        } else {
+            task.get_install_path(app_handle)
+        };
         log::debug!("Installation path: {:?}", dest);
         download::ensure_extract(&tracker, name, buffer, dest).await?;
         log::info!("Extraction completed");
@@ -1258,8 +1207,22 @@ pub async fn install(
         if index == 1 {
             dsh_updated = true;
             if let Some(info) = &dsh_latest {
-                config::set_dsh_pkg_commit(app_handle, info.commit.clone());
-                config::set_dsh_pkg_tag(app_handle, info.tag.clone());
+                let previous_pointer = config::get_active_dsh_slot(app_handle);
+                config::set_active_dsh_slot(app_handle, &info.tag)?;
+                let mut setting = config::get_store_dat_setting(app_handle);
+                setting.active_core = Some("app".to_string());
+                setting.dsh_pkg_commit = Some(info.commit.clone());
+                setting.dsh_pkg_tag = Some(info.tag.clone());
+                if let Err(error) = config::set_store_dat_setting(app_handle, setting) {
+                    let rollback =
+                        config::restore_active_dsh_slot(app_handle, previous_pointer.as_deref());
+                    return match rollback {
+                        Ok(()) => Err(error),
+                        Err(rollback) => {
+                            Err(format!("{error}; CORE_INSTALL_ROLLBACK_FAILED: {rollback}"))
+                        }
+                    };
+                }
             }
         }
     }
@@ -1296,15 +1259,61 @@ fn not_owned_probe_signal(launch_in_progress: bool) -> &'static str {
 }
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
-pub async fn proxy_health_check(port: u16) -> Result<String, String> {
+pub async fn proxy_health_check(
+    app_handle: &tauri::AppHandle,
+    port: u16,
+) -> Result<String, String> {
     if !has_owned_process() {
         return Err(not_owned_probe_signal(LAUNCH_GUARD.load(Ordering::SeqCst)).to_string());
     }
     let client = utils::loopback_http_client(config::HEALTH_CHECK_TIMEOUT)
         .map_err(|e| format!("HARNESS_HEALTH_CLIENT_FAILED: {e}"))?;
+    let boot_endpoint = format!("{}/", config::get_dsh_service_url(port));
+    let adapter = crate::service::dsh_adapter::DshAdapter::active(app_handle)?;
+
+    // 新版 DSH 在 Loader 树 settle 后发布认证 URL，但 stdout 可能先于 HTTP
+    // listener 可连接。认证 URL 只作为 Loader 就绪信号；再用匿名请求确认端口
+    // 已经响应。401 是新版的预期结果，且不会消费一次性 token。
+    if adapter.requires_authenticated_url() && utils::authenticated_service_url(port).is_some() {
+        let response = client
+            .get(&boot_endpoint)
+            .send()
+            .await
+            .map_err(|e| format!("HARNESS_NOT_READY: Harness listener is not ready ({e})"))?;
+        let status = response.status();
+        if status.is_success() || status == reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(format!(
+                "healthy - authenticated dsh web URL announced and listener returned {status}"
+            ));
+        }
+        return Err(format!(
+            "HARNESS_NOT_READY: Harness listener returned {status}"
+        ));
+    }
+
+    if adapter.requires_authenticated_url() {
+        return Err("HARNESS_NOT_READY: authenticated DSH URL has not been announced".into());
+    }
+
+    let boot_response = client
+        .get(&boot_endpoint)
+        .send()
+        .await
+        .map_err(|e| format!("HARNESS_NOT_READY: Harness boot page is not ready ({e})"))?;
+    let boot_status = boot_response.status();
+    let boot_html = boot_response.text().await.unwrap_or_default();
+    if !boot_status.is_success() {
+        return Err(format!(
+            "HARNESS_NOT_READY: Harness boot page returned {boot_status}"
+        ));
+    }
+    let endpoints = utils::health_probe_plugin_urls(port, &boot_html);
+    if endpoints.is_empty() {
+        return Err("HARNESS_NOT_READY: Harness boot page does not declare probe bundles".into());
+    }
     let mut failures = Vec::with_capacity(2);
 
-    for endpoint in utils::health_probe_plugin_urls(port) {
+    for endpoint in endpoints {
         match client.get(&endpoint).send().await {
             Ok(response) => {
                 let status = response.status();
@@ -1390,40 +1399,6 @@ mod tests {
             "wait_for_port_release should return shortly after the port is released, not wait the full window"
         );
         assert!(!is_port_in_use(held));
-    }
-
-    #[test]
-    fn no_open_supported_on_rc8_and_later() {
-        assert!(version_supports_no_open("0.1.0-rc.8"));
-        assert!(version_supports_no_open("0.1.0-rc.9"));
-        // 基础版本更大的新版本：0.1.1-rc.1 的 rc 号（1）虽小于 8，但晚于
-        // 0.1.0-rc.8，同样支持 --no-open（只比 rc 号会把这里误判为旧版）
-        assert!(version_supports_no_open("0.1.1-rc.1"));
-        assert!(version_supports_no_open("0.1.2-rc.1"));
-        // 稳定版必然晚于 rc.8
-        assert!(version_supports_no_open("0.1.0"));
-        assert!(version_supports_no_open("0.2.0"));
-        assert!(version_supports_no_open("1.0.0"));
-    }
-
-    #[test]
-    fn no_open_absent_before_rc8() {
-        assert!(!version_supports_no_open("0.1.0-rc.7"));
-        assert!(!version_supports_no_open("0.1.0-rc.0"));
-        // 基础版本更早的 rc 系列一律不支持
-        assert!(!version_supports_no_open("0.0.1-rc.5"));
-        assert!(!version_supports_no_open("0.0.9-rc.99"));
-    }
-
-    #[test]
-    fn no_open_unknown_version_is_conservative() {
-        assert!(!version_supports_no_open(""));
-        // rc 号缺失：`0.1.0-rc` 的预发布 [rc] 短于 [rc, 8]，判为早于 rc.8
-        assert!(!version_supports_no_open("0.1.0-rc"));
-        // 不完整/非法版本号（缺 patch、带 v 前缀、无 semver 结构）：无法解析
-        assert!(!version_supports_no_open("0.1"));
-        assert!(!version_supports_no_open("v0.1.0"));
-        assert!(!version_supports_no_open("not-a-version"));
     }
 
     /// 构造一个测试用 `OwnedProcess`（跨平台处理 Windows 句柄字段）。

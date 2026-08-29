@@ -36,6 +36,10 @@ export function DownloadToast() {
                 toast.close(toastKey.current)
               void invoke('reveal_in_folder', { path }).catch((err) => {
                 console.error('[Harness] reveal_in_folder failed:', err)
+                toast(t('download.open_folder_failed'), {
+                  variant: 'danger',
+                  description: t('errors.operation_skipped'),
+                })
               })
             },
           }

@@ -1,8 +1,8 @@
 //! 预打包核心的多版本管理：列出、切换、下载历史版本、卸载。
 //!
-//! 磁盘布局：激活版本固定为 `dependencies/dsh`（既有代码全部依赖该路径），
-//! 历史版本存放在 `dependencies/<tag>` 槽位，切换/卸载依赖既有版本行。本地
-//! 核心的探测见 [`super::local`]，来源判定与活动入口见 [`super::source`]。
+//! 磁盘布局：每个发行版位于 `dependencies/cores/<tag>` 不可变槽位，活动 tag
+//! 只保存在设置中。旧版 `dependencies/dsh` 与 `dependencies/<tag>` 仅用于升级
+//! 发现，不再参与目录互换。本地核心探测见 [`super::local`]。
 
 use crate::config;
 use crate::service::{download, fs_guard, workflow};
@@ -15,25 +15,27 @@ use super::source::{active_source, CoreSource, HarnessCore};
 
 /// `dependencies` 目录（激活 `dsh` 与历史 `dsh-<tag>` 槽位的共同父级）。
 fn dependencies_dir(app_handle: &AppHandle) -> PathBuf {
-    config::get_dsh_install_path(app_handle)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    config::get_dependencies_path(app_handle)
 }
 
 /// 历史版本槽位（新命名）：`dependencies/<tag>`。release tag 本身以 `dsh-` 开头
 /// （如 `dsh-0.1.0-rc.8-32331963388`），因此槽位目录名即 tag，不再叠加前缀。
 fn slot_dir(app_handle: &AppHandle, tag: &str) -> PathBuf {
-    dependencies_dir(app_handle).join(tag)
+    config::get_dsh_slot_install_path(app_handle, tag)
 }
 
 /// 定位已下载的槽位：优先新命名 `dependencies/<tag>`，兼容旧版遗留的双前缀
 /// `dependencies/dsh-<tag>`（tag 以 `dsh-` 开头时旧命名会产生 `dsh-dsh-...`）。
 fn existing_slot_dir(app_handle: &AppHandle, tag: &str) -> Option<PathBuf> {
     let deps = dependencies_dir(app_handle);
-    let new = safe_slot_path(&deps, tag).ok()?;
+    let slots = config::get_dsh_core_slots_path(app_handle);
+    let new = safe_slot_path(&slots, tag).ok()?;
     if new.is_dir() {
         return Some(new);
+    }
+    let old = safe_slot_path(&deps, tag).ok()?;
+    if old.is_dir() {
+        return Some(old);
     }
     let legacy = safe_slot_path(&deps, &format!("dsh-{tag}")).ok()?;
     legacy.is_dir().then_some(legacy)
@@ -51,12 +53,27 @@ fn safe_slot_path(deps: &Path, tag: &str) -> Result<PathBuf, String> {
 
 /// 读取发行版目录 `package.json` 中 `@deepseek-ai/dsh` 依赖版本（历史槽位展示用）。
 fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
+    let package_manifest = dir
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("package.json");
+    if let Ok(content) = std::fs::read_to_string(package_manifest) {
+        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+        if let Some(version) = value.get("version").and_then(serde_json::Value::as_str) {
+            if semver::Version::parse(version).is_ok() {
+                return Some(version.to_string());
+            }
+        }
+    }
     let content = std::fs::read_to_string(dir.join("package.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
-    v.get("dependencies")?
+    let version = v
+        .get("dependencies")?
         .get("@deepseek-ai/dsh")?
         .as_str()
-        .map(|s| s.trim_start_matches(['^', '~', '=', '>', '<']).to_string())
+        .map(|s| s.trim_start_matches(['^', '~', '=', '>', '<']).to_string())?;
+    semver::Version::parse(&version).ok().map(|_| version)
 }
 
 /// 核心列表：本地核心 + deepseek-harness-pkg 各发布版本（按版本去重）。
@@ -123,6 +140,9 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         let Some(version) = download::parse_version_from_tag(tag) else {
             continue;
         };
+        if semver::Version::parse(&version).is_err() {
+            continue;
+        }
         if let Some(entry) = version_tags.iter_mut().find(|(v, _)| v == &version) {
             // 同版本重复（测试打包）：保留最后一个 tag
             entry.1 = tag.clone();
@@ -199,12 +219,21 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     if let Some(v) = &installed_version {
         seen_versions.insert(v.clone());
     }
-    if let Ok(entries) = std::fs::read_dir(dependencies_dir(app_handle)) {
+    let scan_roots = [
+        (config::get_dsh_core_slots_path(app_handle), false),
+        (dependencies_dir(app_handle), true),
+    ];
+    for (root, legacy_layout) in scan_roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            // 新命名槽位目录名即 tag（`dsh-0.1.0-rc.8-...`）；旧版双前缀
-            // `dsh-dsh-...` 剥一层 `dsh-` 还原 tag。`dsh` 为激活目录，跳过。
-            let tag = if let Some(rest) = name.strip_prefix("dsh-dsh-") {
+            // `cores/<tag>` 直接使用目录名。旧布局的 `dsh-dsh-*` 剥一层
+            // 前缀；固定回退目录 `dependencies/dsh` 与其他依赖目录跳过。
+            let tag = if !legacy_layout {
+                Some(name.clone())
+            } else if let Some(rest) = name.strip_prefix("dsh-dsh-") {
                 Some(format!("dsh-{rest}"))
             } else if let Some(rest) = name.strip_prefix("dsh-") {
                 if rest.is_empty() {
@@ -222,10 +251,25 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
             let version = read_manifest_dsh_version(&entry.path())
                 .or_else(|| download::parse_version_from_tag(&tag))
                 .unwrap_or_default();
-            if version.is_empty() || !seen_versions.insert(version.clone()) {
+            if version.is_empty() {
                 continue;
             }
             let dir = entry.path();
+            if !seen_versions.insert(version.clone()) {
+                // 远端同版本 tag 与本地制品 tag 可以不同（本地 pkg / 测试打包）。
+                // 版本行尚未下载时，用磁盘上的真实 tag 和目录接管该行，确保切换
+                // 指向确实存在的不可变槽位，而不是显示一个无法激活的远端 tag。
+                if let Some(row) = rows.iter_mut().find(|row| {
+                    row.source == CoreSource::App && row.version == version && !row.present
+                }) {
+                    row.id = format!("app-{tag}");
+                    row.tag = tag;
+                    row.path = dir.to_string_lossy().into_owned();
+                    row.dir = row.path.clone();
+                    row.present = true;
+                }
+                continue;
+            }
             rows.push(HarnessCore {
                 id: format!("app-{tag}"),
                 source: CoreSource::App,
@@ -243,28 +287,51 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     rows
 }
 
-/// 切换活动核心（持久化 + 预打包版本目录互换；服务重启由前端负责）。
+/// 切换活动核心（只持久化选择；服务重启由前端负责）。
 ///
 /// `id` 取值：`local` | `app`（无 tag 记录的旧激活行）| `app-<tag>`。
 pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore, String> {
-    if id == "local" {
-        if local_core(app_handle).is_none() {
-            return Err("CORE_LOCAL_NOT_FOUND: no local core detected".to_string());
-        }
+    validate_active_target(app_handle, id)?;
+    let previous_setting = config::get_store_dat_setting(app_handle);
+    let previous_pointer = config::get_active_dsh_slot(app_handle);
+    let was_running = crate::service::workflow::has_owned_process();
+    if was_running {
+        crate::service::workflow::stop(app_handle.clone()).await?;
+    }
+
+    let selection_result = if id == "local" {
         let mut setting = config::get_store_dat_setting(app_handle);
         setting.active_core = Some(CoreSource::Local.as_str().to_string());
-        config::set_store_dat_setting(app_handle, setting);
+        config::set_store_dat_setting(app_handle, setting)
     } else if id == "app" {
-        if !config::get_dsh_binary_path(app_handle).exists() {
-            return Err("CORE_APP_NOT_FOUND: bundled core is not installed".to_string());
-        }
         let mut setting = config::get_store_dat_setting(app_handle);
         setting.active_core = Some(CoreSource::App.as_str().to_string());
-        config::set_store_dat_setting(app_handle, setting);
+        config::set_store_dat_setting(app_handle, setting)
     } else if let Some(tag) = id.strip_prefix("app-") {
-        switch_app_version(app_handle, tag).await?;
+        switch_app_version(app_handle, tag).await
     } else {
-        return Err(format!("CORE_INVALID_ID: {id}"));
+        unreachable!("target was validated before stopping the service")
+    };
+    if let Err(error) = selection_result {
+        return Err(rollback_active_switch(
+            app_handle,
+            previous_pointer.as_deref(),
+            previous_setting,
+            was_running,
+            error,
+        )
+        .await);
+    }
+
+    if let Err(error) = crate::service::plugin::rebind_for_active_core(app_handle).await {
+        return Err(rollback_active_switch(
+            app_handle,
+            previous_pointer.as_deref(),
+            previous_setting,
+            was_running,
+            format!("CORE_SWITCH_PLUGIN_REBIND: {error}"),
+        )
+        .await);
     }
 
     Ok(list(app_handle)
@@ -274,73 +341,98 @@ pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore,
         .ok_or_else(|| "CORE_NOT_FOUND: active core disappeared after switch".to_string())?)
 }
 
-/// 切换到指定 tag 的预打包版本（已下载的历史槽位）。
-///
-/// 磁盘布局：激活版本固定为 `dependencies/dsh`（既有代码全部依赖该路径），
-/// 已下载的历史版本存放在 `dependencies/<tag>`（tag 以 `dsh-` 开头）。切换 = 目录
-/// 互换：先把当前激活目录改名为自己的 tag 槽位（清理残留同名槽位），再把目标槽位
-/// 改名为激活目录；任一步失败回滚。切换前先停服务，避免目录被进程句柄锁定（Windows DLL 锁）。
-async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), String> {
-    let deps = dependencies_dir(app_handle);
-    let active_dir = config::get_dsh_install_path(app_handle);
+fn validate_active_target(app_handle: &AppHandle, id: &str) -> Result<(), String> {
+    if id == "local" {
+        return local_core(app_handle)
+            .map(|_| ())
+            .ok_or_else(|| "CORE_LOCAL_NOT_FOUND: no local core detected".to_string());
+    }
+    if id == "app" {
+        return config::get_dsh_binary_path(app_handle)
+            .is_file()
+            .then_some(())
+            .ok_or_else(|| "CORE_APP_NOT_FOUND: bundled core is not installed".to_string());
+    }
+    let tag = id
+        .strip_prefix("app-")
+        .ok_or_else(|| format!("CORE_INVALID_ID: {id}"))?;
     fs_guard::validate_id(tag)?;
-    let target_dir = existing_slot_dir(app_handle, tag)
+    let target = existing_slot_dir(app_handle, tag)
         .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
-    let cur_tag = config::get_dsh_pkg_tag(app_handle);
+    target
+        .join(config::DSH_ENTRY_RELATIVE)
+        .is_file()
+        .then_some(())
+        .ok_or_else(|| {
+            format!(
+                "CORE_VERSION_INVALID: dsh entry is missing from {}",
+                target.display()
+            )
+        })
+}
 
-    // 激活目录已是目标版本（tag 相同）→ 仅切来源标记（如 local → app 同版本）
-    if cur_tag.as_deref() == Some(tag) {
-        let mut setting = config::get_store_dat_setting(app_handle);
-        setting.active_core = Some(CoreSource::App.as_str().to_string());
-        config::set_store_dat_setting(app_handle, setting);
-        return Ok(());
-    }
-
-    // 切换前停止运行中的服务，避免目录被进程句柄锁定
-    if workflow::has_owned_process() {
-        if let Err(e) = workflow::stop(app_handle.clone()).await {
-            log::warn!("failed to stop harness before core switch: {e}");
-        }
-    }
-
-    // 1. 当前激活目录让出激活位：改名为自己的 tag 槽位（残留槽位先清理）
-    let backup_tag = cur_tag.clone().unwrap_or_else(|| {
-        // 无 tag 记录（旧版安装）：用版本号兜底命名槽位
+async fn rollback_active_switch(
+    app_handle: &AppHandle,
+    previous_pointer: Option<&str>,
+    previous_setting: config::Setting,
+    was_running: bool,
+    error: String,
+) -> String {
+    let pointer = config::restore_active_dsh_slot(app_handle, previous_pointer);
+    let setting = config::set_store_dat_setting(app_handle, previous_setting);
+    let plugins = if pointer.is_ok() && setting.is_ok() {
+        crate::service::plugin::rebind_for_active_core(app_handle).await
+    } else {
+        Ok(())
+    };
+    let service = if was_running && pointer.is_ok() && setting.is_ok() && plugins.is_ok() {
+        crate::service::workflow::start(app_handle.clone()).await
+    } else {
+        Ok(())
+    };
+    let rollback_errors = [pointer.err(), setting.err(), plugins.err(), service.err()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if rollback_errors.is_empty() {
+        error
+    } else {
         format!(
-            "dsh-{}",
-            config::get_dsh_version(app_handle).unwrap_or_else(|| "unknown".to_string())
+            "{error}; CORE_SWITCH_ROLLBACK_FAILED: {}",
+            rollback_errors.join("; ")
         )
-    });
-    let backup_dir = safe_slot_path(&deps, &backup_tag)?;
-    if active_dir.exists() {
-        if backup_dir.exists() && !download::remove_dir_with_retry(&backup_dir).await {
-            return Err(format!(
-                "CORE_SWITCH_FAILED: cannot clean old backup {}",
-                backup_dir.display()
-            ));
-        }
-        download::rename_with_retry(&active_dir, &backup_dir)
-            .await
-            .map_err(|e| {
-                format!(
-                    "CORE_SWITCH_FAILED: {} -> {}: {e}",
-                    active_dir.display(),
-                    backup_dir.display()
-                )
-            })?;
     }
+}
 
-    // 2. 目标版本进入激活位；失败回滚
-    if let Err(e) = download::rename_with_retry(&target_dir, &active_dir).await {
-        let _ = download::rename_with_retry(&backup_dir, &active_dir).await;
+/// 切换到指定 tag 的预打包版本（已下载的不可变槽位）。
+///
+/// 切换不移动或删除核心目录；目标入口校验通过后一次写入活动 tag。运行中的服务
+/// 仍持有原槽位，直到调用方显式重启，因此写设置失败也不会破坏当前进程。
+async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), String> {
+    fs_guard::validate_id(tag)?;
+    let discovered_dir = existing_slot_dir(app_handle, tag)
+        .ok_or_else(|| format!("CORE_VERSION_NOT_DOWNLOADED: {tag}"))?;
+    let target_dir = slot_dir(app_handle, tag);
+    if discovered_dir != target_dir {
+        std::fs::create_dir_all(config::get_dsh_core_slots_path(app_handle))
+            .map_err(|error| format!("CORE_SLOT_DIR_CREATE: {error}"))?;
+        download::rename_with_retry(&discovered_dir, &target_dir)
+            .await
+            .map_err(|error| format!("CORE_SLOT_MIGRATE: {error}"))?;
+        log::info!(
+            "Migrated inactive legacy core slot {} to {}",
+            discovered_dir.display(),
+            target_dir.display()
+        );
+    }
+    let target_entry = target_dir.join(config::DSH_ENTRY_RELATIVE);
+    if !target_entry.is_file() {
         return Err(format!(
-            "CORE_SWITCH_FAILED: {} -> {}: {e}",
-            target_dir.display(),
-            active_dir.display()
+            "CORE_VERSION_INVALID: dsh entry is missing from {}",
+            target_dir.display()
         ));
     }
-
-    // 3. 记录切换：tag + commit（commit 从 tags 列表反查，失败保留原值）
+    // 记录切换：tag + commit（commit 从 tags 列表反查，失败保留原值）
     let commit = match download::fetch_dsh_pkg_tags().await {
         Ok(tags) => tags.into_iter().find(|(t, _)| t == tag).map(|(_, c)| c),
         Err(e) => {
@@ -348,20 +440,28 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
             None
         }
     };
+    let previous_pointer = config::get_active_dsh_slot(app_handle);
+    config::set_active_dsh_slot(app_handle, tag)?;
     let mut setting = config::get_store_dat_setting(app_handle);
     setting.active_core = Some(CoreSource::App.as_str().to_string());
     setting.dsh_pkg_tag = Some(tag.to_string());
     if let Some(c) = commit {
         setting.dsh_pkg_commit = Some(c);
     }
-    config::set_store_dat_setting(app_handle, setting);
+    if let Err(error) = config::set_store_dat_setting(app_handle, setting) {
+        let rollback = config::restore_active_dsh_slot(app_handle, previous_pointer.as_deref());
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; CORE_SWITCH_ROLLBACK_FAILED: {rollback}")),
+        };
+    }
     Ok(())
 }
 
-/// 下载指定 tag 的预打包核心到历史槽位 `dependencies/<tag>`（不激活，切换由
+/// 下载指定 tag 的预打包核心到不可变槽位 `dependencies/cores/<tag>`（不激活，切换由
 /// `set_active` 完成）。幂等：已下载时直接返回该版本行。
 pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<HarnessCore, String> {
-    // 路径安全：tag 直接进入 `dependencies/<tag>` 槽位路径，需挡 `..`/分隔符
+    // 路径安全：tag 直接进入 `dependencies/cores/<tag>`，需挡 `..`/分隔符
     fs_guard::validate_id(tag)?;
     let dest = slot_dir(app_handle, tag);
     if dest.exists() {
@@ -450,6 +550,10 @@ fn active_app_version(
     active_tag
         .as_deref()
         .and_then(download::parse_version_from_tag)
+        .and_then(|version| {
+            let normalized = version.trim_start_matches('v').to_string();
+            semver::Version::parse(&normalized).ok().map(|_| normalized)
+        })
         .or(manifest_version)
 }
 
@@ -535,5 +639,16 @@ mod tests {
         // rc.8 / rc.7 都保留了最后一个 tag
         assert_eq!(kept_tags[1], "dsh-0.1.0-rc.8-32342588167");
         assert_eq!(kept_tags[2], "dsh-0.1.0-rc.7-31773193668");
+    }
+
+    #[test]
+    fn active_version_falls_back_when_local_slot_tag_is_not_a_release_tag() {
+        assert_eq!(
+            active_app_version(
+                &Some("dsh-v0.1.1-rc.2-local".to_string()),
+                Some("0.1.1-rc.2".to_string()),
+            ),
+            Some("0.1.1-rc.2".to_string())
+        );
     }
 }

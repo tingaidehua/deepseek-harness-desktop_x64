@@ -233,7 +233,7 @@ pub fn force_emit(app_handle: &AppHandle) {
             })
         })
         .lock()
-        .unwrap();
+        .unwrap_or_else(|error| error.into_inner());
     state.pending_fp = None;
     state.last_fp = fp;
     drop(state);
@@ -285,7 +285,7 @@ pub fn check_and_emit(app_handle: &AppHandle) {
             })
         })
         .lock()
-        .unwrap();
+        .unwrap_or_else(|error| error.into_inner());
 
     if state.last_fp.as_deref() == fp.as_deref() {
         return;

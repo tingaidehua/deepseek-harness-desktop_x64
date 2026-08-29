@@ -1,0 +1,38 @@
+{
+  "plugins": [
+    "dsh-better-sidebar",
+    "dsh-notification",
+    "dshmarket",
+    "dsh-tauri",
+    "dsh-tauri-panel",
+    "dsh-tauri-panel-extension",
+    "dsh-tauri-rightclick",
+    "dsh-tauri-session",
+    "dsh-tauri-ui",
+    "dsh-tauri-worktree"
+  ],
+  "resources": [
+    { "id": "better-sidebar.terminal-bundle", "path": "/sidebar/bundle/terminal.js" },
+    { "id": "better-sidebar.editor-bundle", "path": "/sidebar/bundle/editor.js" },
+    { "id": "better-sidebar.mermaid-bundle", "path": "/sidebar/bundle/mermaid.js" }
+  ],
+  "visibleFailurePatterns": [
+    "settings are unavailable in this browser",
+    "failed to load plugins",
+    "chunk script",
+    "forbidden"
+  ],
+  "settingsSurfaces": [
+    { "id": "models", "labels": ["模型", "Models"], "expectedAny": ["DeepSeek", "添加提供方", "Add provider"] },
+    { "id": "plugins", "labels": ["插件", "Plugins"], "expectedAny": ["Agent 循环", "Agent loop"] },
+    { "id": "agent-presets", "labels": ["Agent 预设", "Agent presets"], "expectedAny": ["标准模式", "Standard"] },
+    { "id": "plugin-market", "labels": ["插件市场", "Plugin market"], "expectedAny": ["插件市场", "Plugin market"] },
+    { "id": "sidebar-cards", "labels": ["侧边卡片", "Sidebar cards"], "expectedAny": ["侧边卡片", "Sidebar cards"] },
+    { "id": "archives", "labels": ["归档", "Archives"], "expectedAny": ["归档", "Archive"] }
+  ],
+  "sidebarTabs": [
+    { "id": "files", "labels": ["Files", "文件"] },
+    { "id": "terminal", "labels": ["终端", "Terminal"] },
+    { "id": "source-control", "labels": ["源代码管理", "Source Control"] }
+  ]
+}

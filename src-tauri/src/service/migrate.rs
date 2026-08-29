@@ -67,7 +67,7 @@ pub fn migrate(app_handle: &AppHandle) -> Result<(), String> {
     // 置位幂等标记
     let mut setting = config::get_store_dat_setting(app_handle);
     setting.dsh_home_migrated = true;
-    config::set_store_dat_setting(app_handle, setting);
+    config::set_store_dat_setting(app_handle, setting)?;
     log::info!(
         "dsh home migrated: {} -> {}",
         legacy.display(),

@@ -95,7 +95,7 @@ pub fn check_and_emit_theme(app_handle: &AppHandle) {
     let mut last = LAST_EMITTED
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .unwrap();
+        .unwrap_or_else(|error| error.into_inner());
     if *last == Some(theme) {
         return;
     }

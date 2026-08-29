@@ -30,11 +30,51 @@ use crate::utils::show_main_window;
 /// `app-region: drag` 才能让触摸输入进入窗口非客户区拖拽。ElasticOverscroll
 /// 会抢走触摸手势，因此必须同时禁用。Wry 的默认安全功能保持启用。
 #[cfg(windows)]
-const WINDOWS_DRAG_BROWSER_ARGS: &str = "--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI";
+const WINDOWS_DRAG_BROWSER_ARGS: &str = r#"--enable-features=msWebView2EnableDraggableRegions --disable-features=ElasticOverscroll,msWebOOUI,msPdfOOUI --host-resolver-rules="MAP dsh.tauri.localhost 127.0.0.1""#;
 
 #[cfg(windows)]
 fn windows_drag_browser_args() -> &'static str {
     WINDOWS_DRAG_BROWSER_ARGS
+}
+
+/// 把 EXE 内嵌应用图标同时设置为 Windows 任务栏使用的 `ICON_BIG`。
+///
+/// tao 的跨平台窗口 `icon` API 在 Windows 只设置 `ICON_SMALL`，因此标题栏正确时
+/// 任务栏仍可能显示默认程序图标。资源 32512 由 tauri-build 写入当前模块。
+#[cfg(windows)]
+fn set_windows_taskbar_icon(window: &tauri::WebviewWindow<Wry>) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, LoadImageW, SendMessageW, GWLP_HINSTANCE, ICON_BIG, IMAGE_ICON,
+        LR_DEFAULTSIZE, LR_SHARED, WM_SETICON,
+    };
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("WINDOW_ICON_HANDLE: {error}"))?
+        .0;
+    // SAFETY: hwnd belongs to the live main window. The icon is loaded with LR_SHARED from
+    // the current executable module, so Windows owns its lifetime and no DestroyIcon is due.
+    let icon = unsafe {
+        let instance = GetWindowLongPtrW(hwnd, GWLP_HINSTANCE) as _;
+        LoadImageW(
+            instance,
+            32512usize as *const u16,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        )
+    };
+    if icon.is_null() {
+        return Err(
+            "WINDOW_TASKBAR_ICON_LOAD: embedded icon resource 32512 is missing".to_string(),
+        );
+    }
+    // SAFETY: WM_SETICON accepts the shared HICON loaded above and does not take ownership.
+    unsafe {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
+    }
+    Ok(())
 }
 
 /// setup app
@@ -332,12 +372,15 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     #[cfg(windows)]
     let notification_handlers_registered_for_page = _notification_handlers_registered.clone();
 
-    let webview_builder =
+    let mut webview_builder =
         WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Deepseek Harness Desktop")
             .inner_size(1280.0, 840.0)
             .min_inner_size(860.0, 620.0)
             .resizable(true);
+    if let Some(icon) = app.default_window_icon() {
+        webview_builder = webview_builder.icon(icon.clone())?;
+    }
 
     // Windows/WebView2 在 build() 尚未返回时就可能绘制窗口。先隐藏创建，
     // 等保存的几何恢复完成再显示，避免启动时先闪出默认尺寸再跳到历史尺寸。
@@ -409,6 +452,11 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         )
     });
 
+    // Host 所有权必须在 DSH 客户端包启动前存在；Wry 会在各平台的主文档与子 frame
+    // 中把它注册为 document-created 脚本。
+    let webview_builder = webview_builder
+        .initialization_script_for_all_frames(crate::desktop::host_ownership::HOST_OWNERSHIP_JS);
+
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
     // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥、
     // 样式桥与缩放快捷键桥注入所有 frame（脚本均带幂等守卫，重复注入安全）。
@@ -420,9 +468,16 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
         .initialization_script_for_all_frames(crate::desktop::style::IFRAME_STYLES_JS)
         .initialization_script_for_all_frames(crate::desktop::paste::PASTE_SHIM_JS)
         .initialization_script_for_all_frames(crate::desktop::plugin_boot::PLUGIN_BOOT_RELOAD_JS)
+        .initialization_script_for_all_frames(crate::desktop::readiness::FRAME_READINESS_JS)
+        .initialization_script_for_all_frames(crate::desktop::surface_probe::SURFACE_CONTRACTS_JS)
+        .initialization_script_for_all_frames(crate::desktop::surface_probe::SURFACE_PROBE_JS)
         .initialization_script_for_all_frames(crate::desktop::zoom::ZOOM_SHORTCUT_BRIDGE_JS);
 
     let webview_window = webview_builder.build()?;
+    #[cfg(windows)]
+    if let Err(error) = set_windows_taskbar_icon(&webview_window) {
+        log::warn!("[window] taskbar icon was not applied: {error}");
+    }
     let zoom_factor = crate::config::get_store_dat_setting(app).zoom_factor;
     if zoom_factor != crate::config::default_zoom_factor() {
         if let Err(error) = crate::desktop::zoom::apply_native_zoom(&webview_window, zoom_factor) {
@@ -467,6 +522,7 @@ mod tests {
         assert!(args.contains("--enable-features=msWebView2EnableDraggableRegions"));
         assert!(args.contains("--disable-features=ElasticOverscroll"));
         assert!(args.contains("msWebOOUI,msPdfOOUI"));
+        assert!(args.contains("MAP dsh.tauri.localhost 127.0.0.1"));
         let smart_screen = ["ms", "SmartScreen", "Protection"].concat();
         assert!(!args.contains(smart_screen.as_str()));
     }
@@ -480,6 +536,8 @@ mod security_tests {
         assert!(capability.contains("\"remote\""));
         let wildcard_loopback = ["http://127.0.0.1:", "*"].concat();
         assert!(capability.contains(wildcard_loopback.as_str()));
+        let authenticated_loopback = ["http://dsh.tauri.localhost:", "*"].concat();
+        assert!(capability.contains(authenticated_loopback.as_str()));
         assert!(!capability.contains("https://"));
     }
 
@@ -519,6 +577,9 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::set_active_profile,
         crate::bridge::remove_profile,
         crate::bridge::get_cores,
+        crate::bridge::get_diagnostics_snapshot,
+        crate::bridge::report_frame_readiness,
+        crate::bridge::report_surface_diagnostics,
         crate::bridge::set_active_core,
         crate::bridge::download_core,
         crate::bridge::remove_core,

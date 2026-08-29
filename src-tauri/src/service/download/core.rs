@@ -248,6 +248,13 @@ async fn download_attempt<'a, R: Runtime>(
 
 fn validate_download_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("DOWNLOAD_URL_INVALID: {e}"))?;
+    let loopback_http = parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
     let trusted_host = matches!(
         parsed.host_str(),
         Some(
@@ -264,7 +271,7 @@ fn validate_download_url(url: &str) -> Result<(), String> {
                 | "ghfast.top"
         )
     );
-    if parsed.scheme() != "https" || !trusted_host {
+    if !loopback_http && (parsed.scheme() != "https" || !trusted_host) {
         return Err(format!("DOWNLOAD_SOURCE_UNTRUSTED: {url}"));
     }
     Ok(())
@@ -571,6 +578,132 @@ pub struct LatestDshPkg {
     pub digest: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct LocalDshManifest {
+    format: u32,
+    version: String,
+    commit: String,
+    assets: Vec<LocalDshAsset>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LocalDshAsset {
+    os: String,
+    arch: String,
+    file: String,
+    sha256: String,
+}
+
+fn local_manifest_url(url: &str) -> Result<reqwest::Url, String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_URL_INVALID: {error}"))?;
+    let loopback = parsed.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if parsed.scheme() != "http" || !loopback {
+        return Err(format!(
+            "DSH_LOCAL_MANIFEST_SOURCE_UNTRUSTED: expected an HTTP loopback URL, got {url}"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn parse_local_dsh_manifest(
+    body: &str,
+    manifest_url: &reqwest::Url,
+    expected_version: &str,
+    os: &str,
+    arch: &str,
+) -> Result<LatestDshPkg, String> {
+    let manifest: LocalDshManifest = serde_json::from_str(body)
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_INVALID: {error}"))?;
+    if manifest.format != 1 {
+        return Err(format!(
+            "DSH_LOCAL_MANIFEST_FORMAT_UNSUPPORTED: expected 1, got {}",
+            manifest.format
+        ));
+    }
+    if manifest.version != expected_version {
+        return Err(format!(
+            "DSH_LOCAL_MANIFEST_VERSION_MISMATCH: expected {expected_version}, got {}",
+            manifest.version
+        ));
+    }
+    if manifest.commit.trim().is_empty() {
+        return Err("DSH_LOCAL_MANIFEST_COMMIT_INVALID: commit is empty".to_string());
+    }
+    let asset = manifest
+        .assets
+        .iter()
+        .find(|asset| asset.os == os && asset.arch == arch)
+        .ok_or_else(|| format!("DSH_LOCAL_ASSET_UNAVAILABLE: no asset for {os}/{arch}"))?;
+    if asset.file.is_empty()
+        || asset.file.contains('/')
+        || asset.file.contains('\\')
+        || !(asset.file.ends_with(".tgz") || asset.file.ends_with(".tar.gz"))
+    {
+        return Err(format!(
+            "DSH_LOCAL_ASSET_NAME_INVALID: expected a local tar archive filename, got {}",
+            asset.file
+        ));
+    }
+    let digest = asset
+        .sha256
+        .strip_prefix("sha256:")
+        .unwrap_or(&asset.sha256);
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("DSH_LOCAL_ASSET_DIGEST_INVALID: expected a SHA-256 digest".to_string());
+    }
+    let asset_url = manifest_url
+        .join(&asset.file)
+        .map_err(|error| format!("DSH_LOCAL_ASSET_URL_INVALID: {error}"))?
+        .to_string();
+    validate_download_url(&asset_url)?;
+    let commit_suffix: String = manifest.commit.chars().take(12).collect();
+    Ok(LatestDshPkg {
+        tag: format!("dsh-{}-{commit_suffix}", manifest.version),
+        commit: manifest.commit,
+        asset_url,
+        digest: Some(format!("sha256:{}", digest.to_ascii_lowercase())),
+    })
+}
+
+async fn fetch_local_dsh_pkg_info(
+    manifest_url: &str,
+    expected_version: &str,
+) -> Result<LatestDshPkg, String> {
+    let manifest_url = local_manifest_url(manifest_url)?;
+    let body = reqwest::Client::builder()
+        .user_agent("deepseek-harness-desktop")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_CLIENT_FAILED: {error}"))?
+        .get(manifest_url.clone())
+        .send()
+        .await
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_FETCH_FAILED: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_FETCH_FAILED: {error}"))?
+        .text()
+        .await
+        .map_err(|error| format!("DSH_LOCAL_MANIFEST_READ_FAILED: {error}"))?;
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "arm64",
+        arch => arch,
+    };
+    parse_local_dsh_manifest(
+        &body,
+        &manifest_url,
+        expected_version,
+        std::env::consts::OS,
+        arch,
+    )
+}
+
 /// 构造带 User-Agent 与超时的 GitHub 请求客户端。
 fn github_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -597,32 +730,6 @@ async fn github_api_get(client: &reqwest::Client, url: &str) -> Result<reqwest::
     res.error_for_status().map_err(|e| e.to_string())
 }
 
-/// 拉取最新 release 的 JSON（含 tag、资产、摘要）。
-async fn fetch_releases_latest(client: &reqwest::Client) -> Result<serde_json::Value, String> {
-    github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/releases/latest"))
-        .await
-        .map_err(|e| format!("Latest release request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse latest release response: {e}"))
-}
-
-/// 通过 commits 端点把 release tag 解析为完整 commit hash。
-async fn fetch_tag_commit(client: &reqwest::Client, tag: &str) -> Result<String, String> {
-    let commit: serde_json::Value =
-        github_api_get(client, &format!("{DSH_PKG_GITHUB_API}/commits/{tag}"))
-            .await
-            .map_err(|e| format!("Release commit request failed: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse release commit response: {e}"))?;
-    commit
-        .get("sha")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Missing sha in release commit response".to_string())
-}
-
 /// 从 tag 内嵌的 build-id 提取 commit 标识：`dsh-0.1.0-rc.8-32331963388` → `32331963388`。
 ///
 /// 当 `/commits/{tag}` 因 api.github.com 限流/网络失败时，用 build-id 兜底作为 commit，
@@ -631,10 +738,17 @@ fn commit_fallback_from_tag(tag: &str) -> String {
     tag.rsplit('-').next().unwrap_or(tag).to_string()
 }
 
-/// 从 releases.atom（github.com，非 api.github.com）解析最新 release tag。
-///
-/// 用作 API 限流/不可用时的兜底来源，仅在 API 完全不可达时调用。
-async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
+fn parse_dsh_tags_from_atom(body: &str) -> Vec<String> {
+    body.split("releases/tag/")
+        .skip(1)
+        .filter_map(|suffix| suffix.split('"').next())
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 从 releases.atom（github.com，非 api.github.com）读取 release tag。
+async fn fetch_dsh_tags_from_atom() -> Result<Vec<String>, String> {
     let client = github_client()?;
     let body = client
         .get(format!("{DSH_PKG_REPO}/releases.atom"))
@@ -646,17 +760,9 @@ async fn fetch_latest_dsh_tag_from_atom() -> Result<String, String> {
         .text()
         .await
         .map_err(|e| format!("DSH_ATOM: {e}"))?;
-    // 取第一条 <entry> 作为最新 release，从中提取 releases/tag/<TAG>
-    let entry = body
-        .find("<entry>")
-        .and_then(|p| body[p..].find("</entry>").map(|e| &body[p..p + e]))
-        .unwrap_or(&body);
-    entry
-        .split("releases/tag/")
-        .nth(1)
-        .and_then(|s| s.split('"').next())
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string())
+    let tags = parse_dsh_tags_from_atom(&body);
+    (!tags.is_empty())
+        .then_some(tags)
         .ok_or_else(|| "DSH_ATOM: missing tag in atom feed".to_string())
 }
 
@@ -709,127 +815,32 @@ async fn fetch_dsh_digest_from_expanded_assets(
     Ok(parse_digest_from_expanded_assets(&body, expected_name))
 }
 
-/// 查询 GitHub 上最新 Harness 发行版信息。
+/// 查询桌面端选定的 Harness 发行版信息。
 ///
-/// 优先走 api.github.com（`/releases/latest` + `/commits/{tag}`），拿到可用的 tag、
-/// 资产地址与可信 SHA-256 摘要。API 限流/网络失败时**不整体中断**：
-/// - tag 兜底用 releases.atom（github.com，不受未认证限流约束）；
-/// - commit 兜底用 tag 内嵌 build-id；
-/// - 资产 URL 由平台确定性推导；
-/// - digest 置 `None`（仅可提示、不可自动重装，重装时重取摘要或安全中止）。
-///
-/// 修复前：api.github.com 一限流 `fetch_latest_dsh_pkg_info` 直接返回 Err，
-/// `check_dsh_update` 静默跳过，导致上游 rc.8 发布后桌面端迟迟不出现更新提示。
+/// 配置固定版本时只接受 pkg tag 中精确匹配的版本，不回退到 latest。
 pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
-    let client = github_client()?;
-    let expected_name = config::get_dsh_download_url()?
-        .rsplit('/')
-        .next()
-        .ok_or_else(|| "Missing DSH asset filename".to_string())?
-        .to_string();
-
-    // 1. 首选 GitHub API 拉最新 release（含 tag + 资产 + 可信摘要）
-    let api_release = match fetch_releases_latest(&client).await {
-        Ok(release) => Some(release),
-        Err(e) => {
-            // 限流冷却期内不重复打 403 警告（进入冷却时已提示一次），静默走兜底
-            if crate::service::download::github_api::rate_limited() {
-                log::debug!(
-                    "GitHub API latest release unavailable (rate-limited), using fallback sources: {e}"
-                );
-            } else {
-                log::warn!(
-                    "GitHub API latest release unavailable ({}), falling back to atom feed",
-                    e
-                );
-            }
-            None
-        }
-    };
-
-    // 2. tag：优先 API，失败则从 releases.atom 兜底
-    let tag_name = match &api_release {
-        Some(release) => release
-            .get("tag_name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing tag_name in latest release response".to_string())?
-            .to_string(),
-        None => fetch_latest_dsh_tag_from_atom().await?,
-    };
-
-    // 3. commit：优先 API /commits/{tag}，失败用 tag 内嵌 build-id 兜底
-    let commit = match fetch_tag_commit(&client, &tag_name).await {
-        Ok(sha) => sha,
-        Err(e) => {
-            if crate::service::download::github_api::rate_limited() {
-                log::debug!("GitHub API commit resolution rate-limited, using build-id fallback");
-            } else {
-                log::warn!(
-                    "Failed to resolve commit for tag {} ({}), using build-id fallback",
-                    tag_name,
-                    e
-                );
-            }
-            commit_fallback_from_tag(&tag_name)
-        }
-    };
-
-    // 4. 资产 URL 与摘要：仅 API 可达时资产/摘要可信；否则 URL 平台确定性回退、digest=None
-    let (asset_url, mut digest) = match api_release.as_ref() {
-        Some(release) => {
-            let asset = release
-                .get("assets")
-                .and_then(|value| value.as_array())
-                .and_then(|assets| {
-                    assets.iter().find(|asset| {
-                        asset.get("name").and_then(|value| value.as_str())
-                            == Some(expected_name.as_str())
-                    })
-                });
-            let asset_url = asset
-                .and_then(|a| a.get("browser_download_url").and_then(|v| v.as_str()))
-                .map(|u| u.to_string())
-                .unwrap_or_else(|| config::get_dsh_download_url().unwrap_or_default());
-            let digest = asset
-                .and_then(|a| a.get("digest").and_then(|v| v.as_str()))
-                .filter(|v| v.starts_with("sha256:"))
-                .map(|v| v.to_string());
-            (asset_url, digest)
-        }
-        None => (config::get_dsh_download_url()?, None),
-    };
-
-    // 4b. API 限流/不可用导致取不到可信摘要时，改从 expanded_assets HTML
-    // （github.com，非 api.github.com，不受 403 限流）解析作者填写的 sha256，
-    // 保证完整性校验不因 api.github.com 限流而失效、更新不被卡死。
-    if digest.is_none() {
-        match fetch_dsh_digest_from_expanded_assets(&client, &tag_name, &expected_name).await {
-            Ok(Some(d)) => {
-                log::info!(
-                    "Trusted digest unavailable from GitHub API, recovered from release HTML for {}",
-                    expected_name
-                );
-                digest = Some(d);
-            }
-            Ok(None) => {
-                log::warn!(
-                    "No digest found in release HTML for {} (tag {})",
-                    expected_name,
-                    tag_name
-                );
-            }
-            Err(e) => {
-                log::warn!("Failed to fetch digest from release HTML: {}", e);
-            }
+    let distribution = config::dsh_distribution()?;
+    if let Some(manifest_url) = distribution.manifest_url {
+        return fetch_local_dsh_pkg_info(&manifest_url, &distribution.version).await;
+    }
+    let pinned_version = distribution.version;
+    let pinned_tag = match fetch_dsh_pkg_tags().await {
+        Ok(tags) => select_dsh_pkg_tag(&tags, &pinned_version),
+        Err(error) => {
+            log::warn!(
+                "GitHub API tag lookup unavailable ({}), using atom feed",
+                error
+            );
+            fetch_dsh_tags_from_atom()
+                .await?
+                .into_iter()
+                .find(|tag| parse_version_from_tag(tag).as_deref() == Some(pinned_version.as_str()))
         }
     }
-
-    Ok(LatestDshPkg {
-        tag: tag_name,
-        commit,
-        asset_url,
-        digest,
-    })
+    .ok_or_else(|| {
+        format!("DSH_PINNED_RELEASE_UNAVAILABLE: Harness {pinned_version} has no pkg release")
+    })?;
+    fetch_dsh_pkg_asset(&pinned_tag).await
 }
 
 /// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
@@ -847,19 +858,31 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
         .to_string();
 
     // 1. 优先 API 拉该 tag 的 release（含资产 + 可信摘要）
-    let release = github_api_get(
+    let json = match github_api_get(
         &client,
         &format!("{DSH_PKG_GITHUB_API}/releases/tags/{tag}"),
     )
     .await
-    .map_err(|e| format!("Release {tag} request failed: {e}"))?;
-    let json: serde_json::Value = release
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse release {tag} response: {e}"))?;
+    {
+        Ok(release) => Some(
+            release
+                .json::<serde_json::Value>()
+                .await
+                .map_err(|e| format!("Failed to parse release {tag} response: {e}"))?,
+        ),
+        Err(error) => {
+            log::warn!(
+                "Release {} API lookup unavailable ({}), using deterministic asset URL",
+                tag,
+                error
+            );
+            None
+        }
+    };
 
     let asset = json
-        .get("assets")
+        .as_ref()
+        .and_then(|json| json.get("assets"))
         .and_then(|value| value.as_array())
         .and_then(|assets| {
             assets.iter().find(|asset| {
@@ -913,6 +936,13 @@ pub async fn fetch_dsh_pkg_asset(tag: &str) -> Result<LatestDshPkg, String> {
 pub fn parse_version_from_tag(tag: &str) -> Option<String> {
     let version = tag.strip_prefix("dsh-")?.rsplit_once('-')?.0;
     (!version.is_empty()).then(|| version.to_string())
+}
+
+fn select_dsh_pkg_tag(tags: &[(String, String)], version: &str) -> Option<String> {
+    tags.iter()
+        .map(|(tag, _)| tag)
+        .find(|tag| parse_version_from_tag(tag).as_deref() == Some(version))
+        .cloned()
 }
 
 /// 安装记录（`dsh_pkg_commit` / `dsh_pkg_tag`）是否对应「最新 release 的同一发布」。
@@ -1048,6 +1078,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pinned_version_selects_matching_pkg_tag_without_latest_fallback() {
+        let tags = vec![
+            ("dsh-0.1.3-400".to_string(), "newer".to_string()),
+            ("dsh-0.1.2-alpha.1-300".to_string(), "target".to_string()),
+            ("dsh-0.1.1-200".to_string(), "older".to_string()),
+        ];
+        assert_eq!(
+            select_dsh_pkg_tag(&tags, "0.1.2-alpha.1").as_deref(),
+            Some("dsh-0.1.2-alpha.1-300")
+        );
+        assert_eq!(select_dsh_pkg_tag(&tags, "0.1.2-alpha.2"), None);
+    }
+
+    #[test]
+    fn atom_tag_parser_preserves_release_order() {
+        let atom = r#"<entry><link href="https://github.com/x/releases/tag/dsh-0.2.0-20"/></entry><entry><link href="https://github.com/x/releases/tag/dsh-0.1.2-alpha.1-10"/></entry>"#;
+        assert_eq!(
+            parse_dsh_tags_from_atom(atom),
+            ["dsh-0.2.0-20", "dsh-0.1.2-alpha.1-10"]
+        );
+    }
+
+    #[test]
     fn progress_percent_never_emits_nan_or_inf() {
         // 总长已知：常规百分比
         assert_eq!(download_progress_percent(50, 100), 50.0);
@@ -1093,6 +1146,38 @@ mod tests {
             "https://ghfast.top/https://github.com/dsh-tauri-desk/deepseek-harness-pkg/releases/latest/download/deepseek-harness-pkg-windows.zip"
         )
         .is_ok());
+        assert!(validate_download_url(
+            "http://127.0.0.1:4873/v0.1.2-alpha.1/deepseek-harness-pkg-windows-x86_64.tgz"
+        )
+        .is_ok());
+        assert!(validate_download_url("http://192.168.1.10/dsh.tgz").is_err());
+    }
+
+    #[test]
+    fn local_manifest_requires_exact_version_platform_and_digest() {
+        let base =
+            reqwest::Url::parse("http://127.0.0.1:4873/v0.1.2-alpha.1/manifest.json").unwrap();
+        let body = r#"{
+          "format": 1,
+          "version": "0.1.2-alpha.1",
+          "commit": "cd5ef8148158c3a752a658978873241fdf8e2bbc",
+          "assets": [{
+            "os": "windows",
+            "arch": "x86_64",
+            "file": "deepseek-harness-pkg-windows-x86_64.tgz",
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }]
+        }"#;
+        let info =
+            parse_local_dsh_manifest(body, &base, "0.1.2-alpha.1", "windows", "x86_64").unwrap();
+        assert_eq!(info.tag, "dsh-0.1.2-alpha.1-cd5ef8148158");
+        assert_eq!(
+            info.asset_url,
+            "http://127.0.0.1:4873/v0.1.2-alpha.1/deepseek-harness-pkg-windows-x86_64.tgz"
+        );
+        assert!(
+            parse_local_dsh_manifest(body, &base, "0.1.2-alpha.2", "windows", "x86_64").is_err()
+        );
     }
 
     #[tokio::test]

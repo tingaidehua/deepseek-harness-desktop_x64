@@ -114,10 +114,14 @@ const command = defineCommand({
     locale = detectLocale(args.lang)
 
     const isDev = rawArgs[0] === 'dev'
+    const isBuild = rawArgs[0] === 'build'
     // 剔除内部预处理参数
-    const tauriArgs = isDev
+    let tauriArgs = isDev
       ? rawArgs.filter((arg, i) => arg !== '--yes' && arg !== '--lang' && !arg.startsWith('--lang=') && rawArgs[i - 1] !== '--lang')
       : rawArgs
+
+    if (isBuild && !tauriArgs.some(arg => arg === '-f' || arg === '--features' || arg.startsWith('--features=')))
+      tauriArgs = [...tauriArgs, '--features=custom-protocol']
 
     if (isDev) {
       await ensureInternalPlugins(args.yes === true)

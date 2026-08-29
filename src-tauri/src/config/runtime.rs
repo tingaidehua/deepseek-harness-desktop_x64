@@ -102,6 +102,24 @@ pub fn mirror_download_url(asset_url: &str) -> String {
     format!("{DSH_MIRROR_PREFIX}{asset_url}")
 }
 
+/// 本地回环制品不经过公网镜像；GitHub 资产保留 ghfast 兜底。
+pub fn dsh_asset_download_urls(asset_url: &str) -> Vec<String> {
+    let is_loopback = reqwest::Url::parse(asset_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    if is_loopback {
+        vec![asset_url.to_string()]
+    } else {
+        vec![asset_url.to_string(), mirror_download_url(asset_url)]
+    }
+}
+
 /// 指定 tag 的 DeepSeek Harness 发行版下载地址。
 ///
 /// 把 latest 下载地址中的 `releases/latest/download/` 替换为
@@ -234,11 +252,83 @@ pub fn get_node_install_path(app_handle: &tauri::AppHandle) -> PathBuf {
     get_base_dir(app_handle).join("runtime")
 }
 
-/// Harness 发行版安装目录
+/// Desktop 运行时依赖根目录。
+pub fn get_dependencies_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_base_dir(app_handle).join("dependencies")
+}
+
+/// 旧版固定 Harness 安装目录，仅用于无槽位安装的升级回退。
+pub fn get_legacy_dsh_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_dependencies_path(app_handle).join(DSH_CORE_DIR)
+}
+
+/// Desktop 管理的不可变 Harness 核心槽位根目录。
+pub fn get_dsh_core_slots_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
+    get_dependencies_path(app_handle).join(DSH_CORE_SLOTS_DIR)
+}
+
+/// 指定发行 tag 的不可变核心槽位。
+pub fn get_dsh_slot_install_path<R: Runtime>(app_handle: &AppHandle<R>, tag: &str) -> PathBuf {
+    get_dsh_core_slots_path(app_handle).join(tag)
+}
+
+fn valid_core_slot_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag != "."
+        && tag != ".."
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// 持久化活动不可变槽位指针。调用方须先确认目标入口有效。
+pub fn set_active_dsh_slot<R: Runtime>(app_handle: &AppHandle<R>, tag: &str) -> Result<(), String> {
+    if !valid_core_slot_tag(tag) {
+        return Err(format!("CORE_INVALID_TAG: {tag}"));
+    }
+    let dependencies = get_dependencies_path(app_handle);
+    fs::create_dir_all(&dependencies)
+        .map_err(|error| format!("CORE_POINTER_DIR_CREATE: {error}"))?;
+    fs::write(dependencies.join(DSH_ACTIVE_CORE_FILE), format!("{tag}\n"))
+        .map_err(|error| format!("CORE_POINTER_WRITE: {error}"))
+}
+
+/// 恢复或清除活动槽位指针，供设置写入失败时回滚。
+pub fn restore_active_dsh_slot<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    tag: Option<&str>,
+) -> Result<(), String> {
+    if let Some(tag) = tag {
+        return set_active_dsh_slot(app_handle, tag);
+    }
+    let path = get_dependencies_path(app_handle).join(DSH_ACTIVE_CORE_FILE);
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("CORE_POINTER_REMOVE: {error}")),
+    }
+}
+
+/// 读取当前活动不可变槽位 tag；无效内容按未选择处理。
+pub fn get_active_dsh_slot<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> {
+    let tag =
+        fs::read_to_string(get_dependencies_path(app_handle).join(DSH_ACTIVE_CORE_FILE)).ok()?;
+    let tag = tag.trim();
+    valid_core_slot_tag(tag).then(|| tag.to_string())
+}
+
+/// 当前选中的 Harness 发行版目录。
+///
+/// 选择记录只在对应槽位含有效 CLI 入口时生效；升级前安装仍回退旧版固定目录，
+/// 因而迁移或下载中断不会让一个半成品槽位接管运行时。
 pub fn get_dsh_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_base_dir(app_handle)
-        .join("dependencies")
-        .join(DSH_CORE_DIR)
+    if let Some(tag) = get_active_dsh_slot(app_handle) {
+        let slot = get_dsh_slot_install_path(app_handle, &tag);
+        if slot.join(DSH_ENTRY_RELATIVE).is_file() {
+            return slot;
+        }
+    }
+    get_legacy_dsh_install_path(app_handle)
 }
 
 /// dsh CLI 入口
@@ -509,6 +599,24 @@ pub fn is_runtime_compatible(app_handle: &tauri::AppHandle) -> bool {
 
 /// 从打包的 Harness 清单读取 dsh 版本（界面展示用）
 pub fn get_dsh_version<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> {
+    let installed_manifest = get_dsh_install_path(app_handle)
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("package.json");
+    if let Some(version) = fs::read_to_string(installed_manifest)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|manifest| {
+            manifest
+                .get("version")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    {
+        return Some(version);
+    }
+
     let manifest_path = get_dsh_package_json_path(app_handle);
     let content = fs::read_to_string(&manifest_path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -530,6 +638,8 @@ pub struct RuntimeInfo {
     pub dsh_version: Option<String>,
     pub node_version: String,
     pub service_url: String,
+    /// 当前 DSH 进程的一次性浏览器认证地址；仅供内嵌 WebView 导航。
+    pub webview_url: Option<String>,
     pub data_dir: String,
     pub log_path: String,
     pub platform: String,
@@ -542,6 +652,7 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
         dsh_version: get_dsh_version(app),
         node_version: get_active_node_version(),
         service_url: get_dsh_service_url(port),
+        webview_url: None,
         // 用户数据所在目录 = $DSH_HOME（release 为官方 ~/.dsh，debug 为独立
         // ~/.dsh.dev，见 get_dsh_data_path），不再是 AppData
         data_dir: get_dsh_data_path(app).to_string_lossy().into_owned(),

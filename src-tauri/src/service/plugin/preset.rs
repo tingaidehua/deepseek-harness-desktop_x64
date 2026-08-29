@@ -25,9 +25,8 @@ pub struct PreinstallPluginInfo {
     pub spec: String,
     /// 内置插件：条目来自 `resources/internal-plugins.json`，产物由构建期
     /// `scripts/prebuild.ts` 从上游仓库拉取到 `resources/internal-plugins/<id>/`
-    /// 随安装包分发，安装固定走 `link:` 本地
-    /// 依赖；启动时强制核对「已安装 + 路径指向当前捆绑目录」，不满足即自动
-    /// 重装（用户卸载后重启应用同样恢复），因此不出现在首次引导的勾选清单里。
+    /// 随安装包分发。启动时先检查核心兼容性；兼容的插件固化到 profile 内容
+    /// 槽位并以相对 `link:` 安装，不兼容的插件停止安装并返回诊断错误。
     #[serde(default)]
     pub internal: bool,
     /// 安装进 profile 后实际出现在 `dependencies`/`bundles` 里的包名。
@@ -87,15 +86,22 @@ fn preset_plugins_path(app_handle: &AppHandle) -> Option<PathBuf> {
 
 /// 内置插件资源目录名（相对资源根的固定前缀）
 const BUNDLED_PLUGINS_DIR: &str = "internal-plugins";
+/// 社区预设的版本化离线产物目录名。
+const PRESET_PLUGIN_ARTIFACTS_DIR: &str = "preset-plugin-artifacts";
 /// 旧版内置插件资源目录名，仅用于启动迁移清理
 const LEGACY_BUNDLED_PLUGINS_DIR: &str = "preset-plugins";
 
 /// 在资源根目录下定位某内置插件的捆绑目录：与 [`find_manifest_in_resource_root`] 相同的
 /// 布局探测——先 `resources/` 子目录（安装包/开发产物按 `bundle.resources` 前缀
 /// 落盘），再扁平布局；以目录内存在 `package.json` 判定产物有效（prebuild 恒写入）。
-fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
+fn find_packaged_in_root(
+    root: &std::path::Path,
+    directory: &str,
+    family: &str,
+    id: &str,
+) -> Option<PathBuf> {
     let probe = |base: &std::path::Path| {
-        let dir = base.join(BUNDLED_PLUGINS_DIR).join(id);
+        let dir = base.join(directory).join(family).join(id);
         dir.join("package.json").exists().then_some(dir)
     };
     probe(&root.join("resources")).or_else(|| probe(root))
@@ -111,21 +117,52 @@ fn find_bundled_in_root(root: &std::path::Path, id: &str) -> Option<PathBuf> {
 /// junction（目录联接），改源码 + 重启服务即热更新，无需提交子插件 git、无需
 /// prebuild；设置但缺该 id 返回 None（跳过，不回落随包目录），让开发者显式感知。
 pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
+    let family = crate::service::dsh_adapter::DshAdapter::active(app_handle)
+        .ok()?
+        .plugin_family();
     #[cfg(debug_assertions)]
     if let Some(root) = dev_internal_plugins_dir() {
-        let dev = root.join(id);
+        let dev = root.join(family).join(id);
         return dev.join("package.json").exists().then_some(dev);
     }
     if let Ok(dir) = app_handle.path().resource_dir() {
-        if let Some(candidate) = find_bundled_in_root(&dir, id) {
+        if let Some(candidate) = find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, family, id) {
             return Some(candidate);
         }
     }
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
         .join(BUNDLED_PLUGINS_DIR)
+        .join(family)
         .join(id);
     source.join("package.json").exists().then_some(source)
+}
+
+/// 定位与当前核心协议世代匹配的社区预设离线产物。
+pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
+    let family = crate::service::dsh_adapter::DshAdapter::active(app_handle)
+        .ok()?
+        .plugin_family();
+    if let Ok(dir) = app_handle.path().resource_dir() {
+        if let Some(candidate) =
+            find_packaged_in_root(&dir, PRESET_PLUGIN_ARTIFACTS_DIR, family, id)
+        {
+            return Some(candidate);
+        }
+    }
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(PRESET_PLUGIN_ARTIFACTS_DIR)
+        .join(family)
+        .join(id);
+    source.join("package.json").exists().then_some(source)
+}
+
+/// 新世代核心已经原生提供 Windows 进程检查器，不应再加载覆盖核心实现的旧插件。
+pub(crate) fn provided_by_active_core(app_handle: &AppHandle, id: &str) -> bool {
+    id == "dsh-win-terminal-inspector"
+        && crate::service::dsh_adapter::DshAdapter::active(app_handle)
+            .is_ok_and(|adapter| adapter.id() == "authenticated-web-v1")
 }
 
 /// 删除旧版随包资源目录 `resources/preset-plugins`，避免升级安装保留不再使用的
@@ -215,22 +252,130 @@ fn parse_dev_internal_dir(content: &str) -> Option<PathBuf> {
     None
 }
 
-/// 内置插件的安装依赖形式：`link:<绝对路径>`（正斜杠、去尾部斜杠）。
-///
-/// 用 `link:` 而非 `file:`：pnpm 会把 `file:D:/...`（Windows 盘符冒号）当相对
-/// 路径拼到 cwd 下（报 `scandir <cwd>\D:\... ENOENT`），而 `link:` 正确按绝对
-/// 路径解析并建立目录联接（junction，改源码重启服务即热更新）。pnpm 按传入
-/// 形式把 `link:` 依赖写入 profile 的 package.json；安装（`install.rs`）与启动
-/// 自愈（`internal.rs`）共用这一规范形比对路径是否正确。
-///
-/// 生成前用 `dunce::simplified` 归一化 Windows 扩展长度路径前缀（`\\?\`
-/// verbatim）：`resource_dir()` 在部分 Windows 环境返回 verbatim 形式，直接
-/// 拼进 `link:` 会得到 `link://?/G:/...`，pnpm 会把 `//?/G:/...` 当作相对路径
-/// 解析并生成 `..\?\G:\...` 的坏联接（内置插件重装死循环的根因），因此此处
-/// 统一转成常规绝对路径。dunce 在非 Windows 平台是 no-op，跨平台安全。
-pub(crate) fn bundled_dep_spec(dir: &std::path::Path) -> String {
-    let normalized = dunce::simplified(dir).to_string_lossy().replace('\\', "/");
-    format!("link:{}", normalized.trim_end_matches('/'))
+/// 将捆绑插件复制到 profile 内的不可变内容槽位，并返回跨盘符安全的相对链接。
+pub(crate) fn stage_bundled_plugin(
+    profile: &std::path::Path,
+    id: &str,
+    source: &std::path::Path,
+) -> Result<String, String> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(format!("BUNDLED_PLUGIN_INVALID_ID: {id}"));
+    }
+    let fingerprint = plugin_tree_fingerprint(source)?;
+    let leaf = format!("{id}-{fingerprint:016x}");
+    let root = profile.join(".desktop-internal");
+    let destination = root.join(&leaf);
+    if !destination.join("package.json").is_file() {
+        std::fs::create_dir_all(&root)
+            .map_err(|error| format!("BUNDLED_PLUGIN_STAGE_ROOT: {error}"))?;
+        let staging = root.join(format!(".{leaf}.{}.tmp", std::process::id()));
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging)
+                .map_err(|error| format!("BUNDLED_PLUGIN_STAGE_CLEAN: {error}"))?;
+        }
+        copy_plugin_tree(source, &staging)?;
+        match std::fs::rename(&staging, &destination) {
+            Ok(()) => {}
+            Err(error) if destination.join("package.json").is_file() => {
+                let _ = std::fs::remove_dir_all(&staging);
+                log::debug!("bundled plugin was staged concurrently: {error}");
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(format!("BUNDLED_PLUGIN_STAGE_COMMIT: {error}"));
+            }
+        }
+    }
+    let target = destination.to_string_lossy().replace('\\', "/");
+    Ok(format!("{id}@link:{target}"))
+}
+
+/// 把社区预设固化到 profile 内容槽位并以 `file:` 安装，使 pnpm 同时解析其
+/// 非 DSH 运行依赖；内置插件使用 `link:`，因为它们的运行依赖已由制品收敛。
+pub(crate) fn stage_preset_plugin(
+    profile: &std::path::Path,
+    id: &str,
+    source: &std::path::Path,
+) -> Result<String, String> {
+    let linked = stage_bundled_plugin(profile, id, source)?;
+    Ok(linked.replacen("@link:", "@file:", 1))
+}
+
+fn plugin_tree_fingerprint(source: &std::path::Path) -> Result<u64, String> {
+    fn append_tree(
+        root: &std::path::Path,
+        directory: &std::path::Path,
+        bytes: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let mut entries = std::fs::read_dir(directory)
+            .map_err(|error| format!("BUNDLED_PLUGIN_FINGERPRINT_READ: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("BUNDLED_PLUGIN_FINGERPRINT_ENTRY: {error}"))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("BUNDLED_PLUGIN_FINGERPRINT_TYPE: {error}"))?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| format!("BUNDLED_PLUGIN_FINGERPRINT_PATH: {error}"))?;
+            bytes.extend_from_slice(relative.to_string_lossy().replace('\\', "/").as_bytes());
+            bytes.push(0);
+            if kind.is_dir() {
+                append_tree(root, &path, bytes)?;
+            } else if kind.is_file() {
+                bytes.extend_from_slice(
+                    &std::fs::read(&path)
+                        .map_err(|error| format!("BUNDLED_PLUGIN_FINGERPRINT_FILE: {error}"))?,
+                );
+            } else {
+                return Err(format!(
+                    "BUNDLED_PLUGIN_STAGE_UNSUPPORTED_ENTRY: {}",
+                    path.display()
+                ));
+            }
+            bytes.push(0xff);
+        }
+        Ok(())
+    }
+
+    if !source.join("package.json").is_file() {
+        return Err("BUNDLED_PLUGIN_MANIFEST_READ: package.json is missing".to_string());
+    }
+    let mut bytes = Vec::new();
+    append_tree(source, source, &mut bytes)?;
+    Ok(fnv1a(&bytes))
+}
+
+fn copy_plugin_tree(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination)
+        .map_err(|error| format!("BUNDLED_PLUGIN_STAGE_DIR: {error}"))?;
+    for entry in
+        std::fs::read_dir(source).map_err(|error| format!("BUNDLED_PLUGIN_STAGE_READ: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("BUNDLED_PLUGIN_STAGE_ENTRY: {error}"))?;
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("BUNDLED_PLUGIN_STAGE_TYPE: {error}"))?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_plugin_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target)
+                .map_err(|error| format!("BUNDLED_PLUGIN_STAGE_COPY: {error}"))?;
+        } else {
+            return Err(format!(
+                "BUNDLED_PLUGIN_STAGE_UNSUPPORTED_ENTRY: {}",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 解析插件清单 JSON，并由清单来源统一设置内部插件标记。
@@ -469,12 +614,18 @@ mod tests {
         let nested = dir
             .join("resources")
             .join(BUNDLED_PLUGINS_DIR)
+            .join("authenticated-web-v1")
             .join("dsh-tauri");
         std::fs::create_dir_all(&nested).expect("create temp nested bundled dir");
         std::fs::write(nested.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found =
-            find_bundled_in_root(&dir, "dsh-tauri").expect("nested bundled dir should be found");
+        let found = find_packaged_in_root(
+            &dir,
+            BUNDLED_PLUGINS_DIR,
+            "authenticated-web-v1",
+            "dsh-tauri",
+        )
+        .expect("nested bundled dir should be found");
         assert_eq!(found, nested);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -483,12 +634,15 @@ mod tests {
     #[test]
     fn bundled_dir_discovers_flat_layout() {
         let dir = std::env::temp_dir().join(format!("dsh-bundled-flat-{}", std::process::id()));
-        let flat = dir.join(BUNDLED_PLUGINS_DIR).join("dsh-tauri");
+        let flat = dir
+            .join(BUNDLED_PLUGINS_DIR)
+            .join("legacy-web")
+            .join("dsh-tauri");
         std::fs::create_dir_all(&flat).expect("create temp flat bundled dir");
         std::fs::write(flat.join("package.json"), "{}").expect("write bundle manifest");
 
-        let found =
-            find_bundled_in_root(&dir, "dsh-tauri").expect("flat bundled dir should be found");
+        let found = find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "legacy-web", "dsh-tauri")
+            .expect("flat bundled dir should be found");
         assert_eq!(found, flat);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -498,41 +652,16 @@ mod tests {
     fn bundled_dir_requires_package_json() {
         // 无 package.json 的目录不是有效产物（prebuild 未执行）
         let dir = std::env::temp_dir().join(format!("dsh-bundled-empty-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join(BUNDLED_PLUGINS_DIR).join("dsh-tauri"))
-            .expect("create empty dir");
-        assert!(find_bundled_in_root(&dir, "dsh-tauri").is_none());
+        std::fs::create_dir_all(
+            dir.join(BUNDLED_PLUGINS_DIR)
+                .join("legacy-web")
+                .join("dsh-tauri"),
+        )
+        .expect("create empty dir");
+        assert!(
+            find_packaged_in_root(&dir, BUNDLED_PLUGINS_DIR, "legacy-web", "dsh-tauri").is_none()
+        );
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn bundled_dep_spec_normalizes_windows_separators() {
-        assert_eq!(
-            bundled_dep_spec(std::path::Path::new(
-                "C:\\Apps\\dsh\\resources\\internal-plugins\\dsh-tauri"
-            )),
-            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
-        );
-        // 尾部斜杠去除（Windows 盘符 C:\ 不会出现，路径恒为子目录）
-        assert_eq!(
-            bundled_dep_spec(std::path::Path::new("/opt/dsh/plugins/x/")),
-            "link:/opt/dsh/plugins/x"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn bundled_dep_spec_strips_verbatim_prefix() {
-        // 回归：Windows 扩展长度路径前缀（`\\?\`）不该进入 link: spec。
-        // `resource_dir()` 返回 verbatim 路径时，未剥离会导致 pnpm 把
-        // `//?/G:/...` 当相对路径解析、生成 `..\?\G:\...` 的坏联接而安装失败。
-        // （dunce::simplified 在 Windows 上把 `\\?\` 归一回常规绝对路径）
-        let dir = std::path::Path::new(
-            r"\\?\G:\Deepseek Harness Desktop\resources\internal-plugins\dsh-tauri",
-        );
-        assert_eq!(
-            bundled_dep_spec(dir),
-            "link:G:/Deepseek Harness Desktop/resources/internal-plugins/dsh-tauri"
-        );
     }
 
     #[cfg(debug_assertions)]

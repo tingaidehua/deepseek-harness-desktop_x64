@@ -7,6 +7,7 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'valtio-define'
 import { store } from '@/store'
+import { toast } from '@/utils/toast'
 import { Info } from './info'
 
 export interface DesktopAboutDialogProps extends PropsWithOverlays {}
@@ -54,8 +55,15 @@ export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
                     size="sm"
                     className="rounded-md h-8"
                     onPress={() => {
-                      if (about?.repo)
-                        void invoke('open_external_url', { url: about.repo })
+                      if (about?.repo) {
+                        void invoke('open_external_url', { url: about.repo }).catch((error) => {
+                          console.error('[DesktopAbout] open source URL failed:', error)
+                          toast(t('about.open_source_failed'), {
+                            variant: 'danger',
+                            description: t('errors.operation_skipped'),
+                          })
+                        })
+                      }
                     }}
                   >
                     {t('about.github')}

@@ -166,6 +166,10 @@ export function PreinstallSetup() {
   function openRepo(id: string) {
     void invoke('open_preinstall_repo', { id }).catch((err) => {
       console.error('[Harness] open preinstall repo failed:', err)
+      toast(t('preinstall.open_repo_failed'), {
+        variant: 'danger',
+        description: t('errors.operation_skipped'),
+      })
     })
   }
 

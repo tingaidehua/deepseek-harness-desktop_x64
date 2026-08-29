@@ -88,7 +88,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
             );
             let mut setting = config::get_store_dat_setting(&app_handle);
             setting.installed = true;
-            config::set_store_dat_setting(&app_handle, setting);
+            config::set_store_dat_setting(&app_handle, setting)?;
             sync_cli_link(&app_handle);
             return Ok(false);
         }
@@ -145,8 +145,8 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
                             latest.tag,
                             latest.commit
                         );
-                        config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
-                        config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+                        config::set_dsh_pkg_commit(&app_handle, latest.commit.clone())?;
+                        config::set_dsh_pkg_tag(&app_handle, latest.tag.clone())?;
                     }
                     false
                 }
@@ -183,7 +183,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
         let mut setting = config::get_store_dat_setting(&app_handle);
         if !setting.installed {
             setting.installed = true;
-            config::set_store_dat_setting(&app_handle, setting);
+            config::set_store_dat_setting(&app_handle, setting)?;
         }
         sync_cli_link(&app_handle);
         return Ok(false);
@@ -207,7 +207,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     log::debug!("Installation completed, marked as installed");
     let mut setting = config::get_store_dat_setting(&app_handle);
     setting.installed = true;
-    config::set_store_dat_setting(&app_handle, setting);
+    config::set_store_dat_setting(&app_handle, setting)?;
     sync_cli_link(&app_handle);
     Ok(updated)
 }
@@ -257,8 +257,8 @@ pub async fn check_dsh_update(
                 latest.tag,
                 latest.commit
             );
-            config::set_dsh_pkg_commit(&app_handle, latest.commit.clone());
-            config::set_dsh_pkg_tag(&app_handle, latest.tag.clone());
+            config::set_dsh_pkg_commit(&app_handle, latest.commit.clone())?;
+            config::set_dsh_pkg_tag(&app_handle, latest.tag.clone())?;
             Ok(None)
         }
     }

@@ -6,6 +6,7 @@
 
 use crate::config;
 use crate::logger;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
@@ -14,20 +15,25 @@ use tauri_plugin_opener::OpenerExt;
 #[tauri::command]
 pub async fn proxy_health_check(app_handle: AppHandle) -> Result<String, String> {
     let port = config::get_store_dat_setting(&app_handle).port;
-    crate::service::workflow::proxy_health_check(port).await
+    crate::service::workflow::proxy_health_check(&app_handle, port).await
 }
 
 /// 运行时/版本/诊断信息（侧边栏展示）
 #[tauri::command]
 pub async fn get_runtime_info(app_handle: AppHandle) -> Result<config::RuntimeInfo, String> {
     let port = config::get_store_dat_setting(&app_handle).port;
-    Ok(config::runtime_info(&app_handle, port))
+    let mut info = config::runtime_info(&app_handle, port);
+    info.webview_url =
+        crate::service::dsh_adapter::DshAdapter::active(&app_handle)?.webview_url(port);
+    Ok(info)
 }
 
 /// 在系统浏览器中打开 Harness 界面
 #[tauri::command]
 pub async fn open_in_browser(app_handle: AppHandle) -> Result<(), String> {
-    let url = config::get_dsh_service_url(config::get_store_dat_setting(&app_handle).port);
+    let port = config::get_store_dat_setting(&app_handle).port;
+    let url = crate::service::workflow::utils::authenticated_service_url(port)
+        .unwrap_or_else(|| config::get_dsh_service_url(port));
     app_handle
         .opener()
         .open_url(url, None::<&str>)
@@ -49,9 +55,8 @@ pub async fn copy_service_url(app_handle: AppHandle) -> Result<(), String> {
 pub fn reveal_in_folder(app_handle: AppHandle, path: String) -> Result<(), String> {
     // 安全边界：只允许定位允许根目录（下载目录/数据目录/$DSH_HOME）内的文件，
     // 防止第三方插件通过 IPC 驱动宿主打开任意路径。
-    if !crate::bridge::guard::is_allowed_path(&app_handle, std::path::Path::new(&path)) {
-        return Err(format!("REVEAL_PATH_REJECTED: {path}"));
-    }
+    let path = validated_allowed_path(&app_handle, Path::new(&path), PathKind::Any)
+        .map_err(|error| format!("REVEAL_UNAVAILABLE: {error}"))?;
     tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("REVEAL_FAILED: {e}"))
 }
 
@@ -60,10 +65,9 @@ pub fn reveal_in_folder(app_handle: AppHandle, path: String) -> Result<(), Strin
 #[tauri::command]
 pub fn open_dir(app_handle: AppHandle, path: String) -> Result<(), String> {
     // 安全边界同 reveal_in_folder：仅允许打开允许根目录内的目录
-    if !crate::bridge::guard::is_allowed_path(&app_handle, std::path::Path::new(&path)) {
-        return Err(format!("OPEN_DIR_REJECTED: {path}"));
-    }
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| format!("OPEN_DIR_FAILED: {e}"))
+    let path = validated_allowed_path(&app_handle, Path::new(&path), PathKind::Directory)
+        .map_err(|error| format!("OPEN_DIR_UNAVAILABLE: {error}"))?;
+    open_existing_dir(&app_handle, &path)
 }
 
 /// 在系统文件管理器中打开数据目录（官方 $DSH_HOME，即 ~/.dsh）
@@ -73,21 +77,75 @@ pub async fn reveal_data_dir(app_handle: AppHandle) -> Result<(), String> {
     // 目录可能尚未创建（全新安装），先建好再打开，避免资源管理器报路径不存在
     std::fs::create_dir_all(&dsh_home).map_err(|e| e.to_string())?;
 
-    if cfg!(windows) {
-        std::process::Command::new("explorer")
-            .arg(&dsh_home)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-            .arg(&dsh_home)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    } else {
-        std::process::Command::new("xdg-open")
-            .arg(&dsh_home)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+    let path = validated_allowed_path(&app_handle, &dsh_home, PathKind::Directory)
+        .map_err(|error| format!("DATA_DIR_UNAVAILABLE: {error}"))?;
+    open_existing_dir(&app_handle, &path)
+}
+
+#[derive(Clone, Copy)]
+enum PathKind {
+    Any,
+    Directory,
+}
+
+/// 在交给系统组件前完成存在性、类型、安全根与规范路径检查。
+fn validated_allowed_path(
+    app_handle: &AppHandle,
+    path: &Path,
+    kind: PathKind,
+) -> Result<PathBuf, String> {
+    if !crate::bridge::guard::is_allowed_path(app_handle, path) {
+        return Err("path does not exist or is outside an allowed directory".to_string());
+    }
+    canonical_existing_path(path, kind)
+}
+
+fn canonical_existing_path(path: &Path, kind: PathKind) -> Result<PathBuf, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("metadata: {error}"))?;
+    if matches!(kind, PathKind::Directory) && !metadata.is_dir() {
+        return Err("path is not a directory".to_string());
+    }
+    dunce::canonicalize(path).map_err(|error| format!("canonicalize: {error}"))
+}
+
+/// 打开已经验证的目录。Windows 使用禁止系统错误框的 ShellExecuteEx；失败由
+/// Tauri command 返回给前端 toast，不能再弹出脱离 Desktop 生命周期的系统对话框。
+fn open_existing_dir(_app_handle: &AppHandle, path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        return open_existing_dir_windows(path);
+    }
+    #[cfg(not(windows))]
+    {
+        _app_handle
+            .opener()
+            .open_path(path, None::<&str>)
+            .map_err(|error| format!("OPEN_DIR_FAILED: {error}"))
+    }
+}
+
+#[cfg(windows)]
+fn open_existing_dir_windows(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI,
+        lpVerb: verb.as_ptr(),
+        lpFile: target.as_ptr(),
+        nShow: SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    let opened = unsafe { ShellExecuteExW(&mut info) };
+    if opened == 0 {
+        return Err(format!(
+            "OPEN_DIR_FAILED: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
@@ -246,6 +304,23 @@ pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(),
 mod tests {
     use super::is_frontend_log_line;
     use super::tail_bytes;
+    use super::{canonical_existing_path, PathKind};
+
+    #[test]
+    fn external_paths_must_exist_and_match_the_requested_kind() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-desktop-open-path-{}", std::process::id()));
+        let file = root.join("item.txt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+
+        assert!(canonical_existing_path(&root, PathKind::Directory).is_ok());
+        assert!(canonical_existing_path(&file, PathKind::Any).is_ok());
+        assert!(canonical_existing_path(&file, PathKind::Directory).is_err());
+        assert!(canonical_existing_path(&root.join("missing"), PathKind::Any).is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn frontend_line_detected() {

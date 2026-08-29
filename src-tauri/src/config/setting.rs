@@ -28,6 +28,10 @@ pub struct Setting {
     /// 内容有变更 → 重新进入预设引导。`None` = 老用户升级（无基线）→ 弹一次建立基线。
     #[serde(default)]
     pub preset_hash: Option<String>,
+    /// 用户选择的社区预设逻辑 id。物理插件产物随核心协议世代重建，不能把当前
+    /// profile 中某个世代的依赖声明当成跨核心选择状态。
+    #[serde(default)]
+    pub managed_preset_plugins: Vec<String>,
     /// 旧版 AppData `data/dsh` → 官方 `$DSH_HOME`（~/.dsh）数据迁移是否已完成。
     /// 幂等标记：迁移成功并删除旧目录后置位，避免重复合并。
     #[serde(default)]
@@ -102,6 +106,7 @@ impl Default for Setting {
             cli_link_enabled: default_cli_link_enabled(),
             preinstall_done: false,
             preset_hash: None,
+            managed_preset_plugins: Vec::new(),
             dsh_home_migrated: false,
             active_profile: default_active_profile(),
             active_core: None,
@@ -131,9 +136,13 @@ fn setting_write_lock() -> &'static Mutex<()> {
 }
 
 fn read_store_dat_setting(app_handle: &AppHandle) -> Setting {
-    let store = app_handle
-        .store(store_dat_file_name())
-        .expect("Failed to load store");
+    let store = match app_handle.store(store_dat_file_name()) {
+        Ok(store) => store,
+        Err(error) => {
+            log::error!("SETTING_STORE_LOAD: {error}");
+            return Setting::default();
+        }
+    };
     let raw = store.get(STORE_SETTING_KEY);
     let value = raw.as_ref().and_then(|v| {
         v.as_str()
@@ -147,20 +156,26 @@ fn read_store_dat_setting(app_handle: &AppHandle) -> Setting {
     setting
 }
 
-fn write_store_dat_setting(app_handle: &AppHandle, setting: &Setting) -> serde_json::Value {
+fn write_store_dat_setting(
+    app_handle: &AppHandle,
+    setting: &Setting,
+) -> Result<serde_json::Value, String> {
     let store = app_handle
         .store(store_dat_file_name())
-        .expect("Failed to load store");
-    let value = serde_json::to_value(setting).unwrap();
+        .map_err(|error| format!("SETTING_STORE_LOAD: {error}"))?;
+    let value =
+        serde_json::to_value(setting).map_err(|error| format!("SETTING_SERIALIZE: {error}"))?;
     store.set(STORE_SETTING_KEY, value.clone());
-    store.save().expect("Failed to save store");
-    value
+    store
+        .save()
+        .map_err(|error| format!("SETTING_STORE_SAVE: {error}"))?;
+    Ok(value)
 }
 
 fn emit_setting(app_handle: &AppHandle, value: &serde_json::Value) {
-    app_handle
-        .emit("setting_updated", value)
-        .expect("Failed to emit event");
+    if let Err(error) = app_handle.emit("setting_updated", value) {
+        log::warn!("SETTING_EVENT_EMIT: {error}");
+    }
 }
 
 fn preserve_persisted_zoom(mut replacement: Setting, persisted_zoom: f64) -> Setting {
@@ -170,20 +185,21 @@ fn preserve_persisted_zoom(mut replacement: Setting, persisted_zoom: f64) -> Set
 
 /// 兼容旧调用方的整对象写入，但始终保留锁内读到的最新缩放，避免长流程用陈旧
 /// `Setting` 覆盖刚刚由快捷键写入的值。
-pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) {
+pub fn set_store_dat_setting(app_handle: &AppHandle, setting: Setting) -> Result<(), String> {
     let value = {
         let _guard = setting_write_lock()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let current = read_store_dat_setting(app_handle);
         let setting = preserve_persisted_zoom(setting, current.zoom_factor);
-        write_store_dat_setting(app_handle, &setting)
+        write_store_dat_setting(app_handle, &setting)?
     };
     emit_setting(app_handle, &value);
+    Ok(())
 }
 
 /// 在一个短临界区内读取、修改并写回设置，避免多个精确字段更新彼此丢失。
-pub fn update_store_dat_setting<F>(app_handle: &AppHandle, update: F) -> Setting
+pub fn update_store_dat_setting<F>(app_handle: &AppHandle, update: F) -> Result<Setting, String>
 where
     F: FnOnce(&mut Setting),
 {
@@ -194,14 +210,17 @@ where
         let mut setting = read_store_dat_setting(app_handle);
         update(&mut setting);
         setting.zoom_factor = normalize_zoom_factor(setting.zoom_factor);
-        let value = write_store_dat_setting(app_handle, &setting);
+        let value = write_store_dat_setting(app_handle, &setting)?;
         (setting, value)
     };
     emit_setting(app_handle, &value);
-    setting
+    Ok(setting)
 }
 
-pub fn set_store_dat_zoom_factor(app_handle: &AppHandle, zoom_factor: f64) -> Setting {
+pub fn set_store_dat_zoom_factor(
+    app_handle: &AppHandle,
+    zoom_factor: f64,
+) -> Result<Setting, String> {
     update_store_dat_setting(app_handle, |setting| {
         setting.zoom_factor = zoom_factor;
     })
@@ -220,10 +239,10 @@ pub fn get_dsh_pkg_commit(app_handle: &AppHandle) -> Option<String> {
 }
 
 /// 记录已安装 Harness 发行版的 GitHub release commit hash
-pub fn set_dsh_pkg_commit(app_handle: &AppHandle, commit: String) {
+pub fn set_dsh_pkg_commit(app_handle: &AppHandle, commit: String) -> Result<(), String> {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_commit = Some(commit);
-    set_store_dat_setting(app_handle, setting);
+    set_store_dat_setting(app_handle, setting)
 }
 
 /// 已安装 Harness 发行版对应的 GitHub release tag
@@ -232,10 +251,10 @@ pub fn get_dsh_pkg_tag(app_handle: &AppHandle) -> Option<String> {
 }
 
 /// 记录已安装 Harness 发行版的 GitHub release tag
-pub fn set_dsh_pkg_tag(app_handle: &AppHandle, tag: String) {
+pub fn set_dsh_pkg_tag(app_handle: &AppHandle, tag: String) -> Result<(), String> {
     let mut setting = get_store_dat_setting(app_handle);
     setting.dsh_pkg_tag = Some(tag);
-    set_store_dat_setting(app_handle, setting);
+    set_store_dat_setting(app_handle, setting)
 }
 
 #[cfg(test)]

@@ -32,6 +32,83 @@ use super::install::{build_plugin_envs, harness_prefer_bundled_pnpm};
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
 use super::preset::{load_presets, PreinstallPluginInfo};
 
+const DSH_PACKAGE_PREFIX: &str = "@deepseek-ai/dsh-";
+const CORE_RECONCILE_PENDING: &str = ".dsh-core-reconcile-pending";
+
+/// 找出 profile 中重复安装、且当前激活 DSH 已随包提供的核心依赖。
+///
+/// profile 只负责声明 bundle 与额外插件；随 DSH 制品交付的包必须从当前
+/// `dependencies/dsh` 解析。否则切换核心版本后，profile 的旧前端包仍会优先
+/// 进入浏览器模块表，造成新后端插件与旧 React 客户端混装。
+fn duplicated_shipped_dependencies(
+    dependencies: &serde_json::Map<String, serde_json::Value>,
+    shipped_scope: &Path,
+) -> Vec<String> {
+    dependencies
+        .keys()
+        .filter(|name| {
+            name.starts_with(DSH_PACKAGE_PREFIX)
+                && shipped_scope
+                    .join(name.trim_start_matches("@deepseek-ai/"))
+                    .join("package.json")
+                    .is_file()
+        })
+        .cloned()
+        .collect()
+}
+
+/// 启动前移除 profile 对当前 DSH 自带包的版本覆盖，并重建依赖图。
+///
+/// 该操作保留 `dsh.profile.bundles`，因此插件组成不变；只删除重复的 npm
+/// dependency，使核心包始终来自当前激活的 `dependencies/dsh`。有改动时执行
+/// `pnpm install`，确保旧包不只从清单消失，也从 profile `node_modules` 清除。
+pub(crate) async fn reconcile_shipped_dependencies(app_handle: &AppHandle) -> Result<(), String> {
+    let profile = profile_dir(app_handle);
+    let manifest_path = profile.join("package.json");
+    let pending_path = profile.join(CORE_RECONCILE_PENDING);
+    let raw = match std::fs::read_to_string(&manifest_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("PROFILE_MANIFEST_READ: {error}")),
+    };
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|error| format!("PROFILE_MANIFEST_PARSE: {error}"))?;
+    let dependencies = manifest
+        .get_mut("dependencies")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| {
+            "PROFILE_MANIFEST_DEPENDENCIES: dependencies is not an object".to_string()
+        })?;
+    let shipped_scope = config::get_dsh_install_path(app_handle)
+        .join("node_modules")
+        .join("@deepseek-ai");
+    let duplicated = duplicated_shipped_dependencies(dependencies, &shipped_scope);
+    if duplicated.is_empty() && !pending_path.is_file() {
+        return Ok(());
+    }
+    for name in &duplicated {
+        dependencies.remove(name);
+    }
+    std::fs::write(&pending_path, "pending\n")
+        .map_err(|error| format!("PROFILE_RECONCILE_MARKER_WRITE: {error}"))?;
+    if !duplicated.is_empty() {
+        let rendered = serde_json::to_string_pretty(&manifest)
+            .map_err(|error| format!("PROFILE_MANIFEST_RENDER: {error}"))?;
+        std::fs::write(&manifest_path, format!("{rendered}\n"))
+            .map_err(|error| format!("PROFILE_MANIFEST_WRITE: {error}"))?;
+        log::warn!(
+            "PROFILE_CORE_OVERRIDE_REMOVED: removed active DSH packages from profile dependencies: {duplicated:?}"
+        );
+    } else {
+        log::warn!("PROFILE_CORE_RECONCILE_RETRY: retrying the interrupted profile cleanup");
+    }
+    repair_with_pnpm_install(app_handle, &profile).await?;
+    std::fs::remove_file(&pending_path)
+        .map_err(|error| format!("PROFILE_RECONCILE_MARKER_REMOVE: {error}"))?;
+    log::info!("profile dependency graph reconciled with active DSH installation: {duplicated:?}");
+    Ok(())
+}
+
 /// 判定清单引用的预装插件是否缺失产物（纯函数，便于单测）。
 ///
 /// 命中条件：插件被 profile 清单引用（`dependencies` 键或 `dsh.profile.bundles`
@@ -175,7 +252,9 @@ const REPAIR_OUTPUT_LIMIT: usize = 4000;
 /// Windows 上 `.cmd`/`.bat` 无法被 CreateProcess 直接执行（需 cmd.exe 解析），
 /// 用户 pnpm 只接受 `.exe`。
 fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
-    use super::install::{bundled_pnpm_major, pnpm_major_version_at, profile_store_major};
+    use super::install::{
+        bundled_pnpm_major, pnpm_major_version_at, profile_store_major, user_pnpm_major_version,
+    };
 
     let bundled = config::get_pnpm_binary_path(app_handle);
     let bundled_ready = bundled.exists();
@@ -197,6 +276,24 @@ fn pnpm_direct(app_handle: &AppHandle) -> Option<(PathBuf, Vec<OsString>)> {
     if let Some(user) = user_pnpm {
         if store.is_none_or(|s| pnpm_major_version_at(&user) == Some(s)) {
             return Some((user, Vec::new()));
+        }
+    }
+
+    // npm 全局安装的 pnpm 在 Windows 上通常只有 pnpm.cmd；CreateProcessW
+    // 不能直接执行批处理，但同目录下有真实的 pnpm.cjs。直接交给选定 Node
+    // 执行，既不经过 shell，也不会弹出黑窗。
+    #[cfg(windows)]
+    if store.is_none_or(|s| user_pnpm_major_version(app_handle) == Some(s)) {
+        if let Some(wrapper) = cli::find_user_pnpm(app_handle) {
+            if let Some(parent) = wrapper.parent() {
+                let entry = parent.join("node_modules/pnpm/bin/pnpm.cjs");
+                if entry.is_file() {
+                    return Some((
+                        config::get_node_binary_path(app_handle),
+                        vec![entry.into_os_string()],
+                    ));
+                }
+            }
         }
     }
 
@@ -352,6 +449,27 @@ mod tests {
             fs::write(dir.join("package.json"), "{}").expect("write package.json");
         }
         root
+    }
+
+    #[test]
+    fn shipped_duplicates_only_include_packages_present_in_active_dsh() {
+        let root = setup("shipped-duplicates", &[]);
+        let shipped_scope = root.join("active").join("@deepseek-ai");
+        for name in ["dsh-web-app", "dsh-client-store"] {
+            let package = shipped_scope.join(name);
+            fs::create_dir_all(&package).unwrap();
+            fs::write(package.join("package.json"), "{}").unwrap();
+        }
+        let dependencies = serde_json::json!({
+            "@deepseek-ai/dsh-web-app": "0.1.1-rc.2",
+            "@deepseek-ai/dsh-not-shipped": "1.0.0",
+            "@zlzhg/dsh-zlzhg-account": "link:account",
+            "skillhub-plugin": "link:skillhub"
+        });
+        let duplicated =
+            duplicated_shipped_dependencies(dependencies.as_object().unwrap(), &shipped_scope);
+        assert_eq!(duplicated, vec!["@deepseek-ai/dsh-web-app"]);
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

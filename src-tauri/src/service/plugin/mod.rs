@@ -26,10 +26,12 @@
 //! - [`watch`]：已安装插件文件监控（轮询指纹比对 + `dsh-plugins-updated` 事件推送）
 
 mod cancel;
+pub mod compatibility;
 pub mod errors;
 mod install;
 mod installed;
 mod internal;
+mod managed;
 mod preset;
 mod process;
 pub mod recovery;
@@ -43,10 +45,11 @@ pub use install::{install, remove, update};
 pub(crate) use installed::ensure_profile_npmrc;
 pub use installed::{list, PreinstallPlugin};
 pub(crate) use internal::ensure as ensure_internal_plugins;
+pub(crate) use managed::rebind_for_active_core;
 pub use preset::repo_url_of;
 pub(crate) use preset::{current_preset_hash, preinstall_pending, remove_legacy_bundled_plugins};
 pub use recovery::{
     detect as detect_recovery, uninstall as uninstall_recovery, PluginRecoveryInfo,
 };
-pub(crate) use verify::ensure_preset_plugins;
+pub(crate) use verify::{ensure_preset_plugins, reconcile_shipped_dependencies};
 pub use watch::DshPlugin;

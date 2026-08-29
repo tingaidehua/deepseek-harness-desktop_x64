@@ -7,6 +7,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod core;
+pub mod diagnostics;
 pub mod guard;
 pub mod lifecycle;
 pub mod plugin;
@@ -17,6 +18,7 @@ pub mod updater;
 pub use clipboard::*;
 pub use config::*;
 pub use core::*;
+pub use diagnostics::*;
 pub use lifecycle::*;
 pub use plugin::*;
 pub use profile::*;

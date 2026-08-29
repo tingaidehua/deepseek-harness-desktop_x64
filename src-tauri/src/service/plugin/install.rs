@@ -34,7 +34,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use super::errors;
 use super::installed::{installed_name, is_installed, profile_dir};
-use super::preset::{bundled_dep_spec, bundled_plugin_dir, load_presets, PreinstallPluginInfo};
+use super::preset::{
+    bundled_plugin_dir, load_presets, preset_plugin_artifact_dir, provided_by_active_core,
+    stage_bundled_plugin, stage_preset_plugin, PreinstallPluginInfo,
+};
 use super::process::{run_plugin_process, PreinstallLogPayload, PREINSTALL_LOG_EVENT};
 use super::recovery::is_actionable_plugin_ref;
 use super::uninstall_recovery;
@@ -63,13 +66,25 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         presets.iter().map(|p| (p.id.as_str(), p)).collect();
 
     let mut specs = Vec::with_capacity(ids.len());
+    let mut install_ids = Vec::with_capacity(ids.len());
     for id in ids {
         let preset = preset_map
             .get(id.as_str())
             .ok_or_else(|| format!("PREINSTALL_INVALID_ID: {id}"))?;
-        // 内置插件改为从随包分发的捆绑目录安装（`link:` 本地联接依赖，见
-        // preset::bundled_dep_spec；不用 `file:`——pnpm 对盘符冒号的绝对路径
-        // 会当相对路径解析），其余沿用清单声明的 spec；随后统一把
+        if provided_by_active_core(app_handle, id) {
+            log::info!("PREINSTALL_PROVIDED_BY_CORE: {id}");
+            continue;
+        }
+        let bundled_dir = bundled_dir_of(app_handle, preset);
+        if let Some(dir) = &bundled_dir {
+            super::compatibility::require_packaged_plugin_compatible(
+                &core::active_core_dir(app_handle),
+                dir,
+            )?;
+        }
+        // 内置插件先复制到 profile 内的内容槽位，再用相对 `link:` 安装，避免
+        // pnpm 在 Windows 上把跨盘符绝对路径错误拼入 profile。其余沿用清单
+        // 声明的 spec；随后统一把
         // `github:user/repo` 规范为显式 `git+https://...`，绕开 pnpm 对
         // GitHub 简写「HTTPS 探测失败即回退 SSH」的已知缺陷（pnpm issue
         // #3948 / #7243 / #13276）：公开仓库一旦落进 git+ssh，在没有 SSH 配置
@@ -77,19 +92,22 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         //
         // 最后经 shell_quote_spec 给含空格的 spec 加内嵌双引号（**仅 Windows**）：
         // dsh CLI 只在 win32 用 `shell:true` 启动 pnpm、把参数按空格拼接（Node
-        // 不引号转义，DEP0190），内置插件指向应用安装目录（如
-        // `G:\Deepseek Harness Desktop\...`，路径常含空格），拼进 shell 后会被
-        // 切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED`，插件装不上、
-        // 启动自愈每次重装（死循环）。引号让 cmd 把整条 spec 视为单一 token；
-        // pnpm 解析后自行剥离引号，落盘值仍是不带引号的 `link:<路径>`，与内核
-        // 对账的 `expected`（bundled_dep_spec）一致。macOS/Linux 是直接
+        // 不引号转义，DEP0190），含空格的外部 spec 会被切碎成多个参数。引号
+        // 让 cmd 把整条 spec 视为单一 token；macOS/Linux 是直接
         // `spawnSync`（无 shell），spec 作为单个 argv 传递、空格天然保留，
         // 引号只会被当作包名字符导致安装失败（见 [`shell_quote_spec`]）。
         let raw = normalize_git_spec(&preset_spec_for_install(
             preset,
-            bundled_dir_of(app_handle, preset),
+            bundled_dir,
+            &profile_dir(app_handle),
         )?);
         specs.push(shell_quote_spec(&raw));
+        install_ids.push(id.clone());
+    }
+
+    if install_ids.is_empty() {
+        remember_selected_presets(app_handle, ids, &preset_map)?;
+        return Ok(());
     }
 
     // 确保 pnpm/dsh shim 存在
@@ -142,7 +160,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     ];
     args.extend(specs.iter().map(|s| OsString::from(s.as_str())));
 
-    let cwd = config::get_dsh_install_path(app_handle);
+    let cwd = core::active_core_dir(app_handle);
     // 日志打印实际传给 dsh 的 spec（此前打印 id 会误导排查：安装用的是 spec）
     log::info!("Running dsh plugin install for {specs:?}");
 
@@ -174,7 +192,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
         };
         // 批量安装失败时给本次选中的每个插件记一条错误（前端据此展示异常标记，
         // 可针对单个插件重试更新/卸载）
-        for id in ids {
+        for id in &install_ids {
             if let Err(e) = errors::record(app_handle, id, "install", &message) {
                 log::warn!("failed to record plugin error for {id}: {e}");
             }
@@ -214,7 +232,8 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     // 真正修复：核验本次安装是否真实落盘。pnpm 可能在 allowBuilds 阻断时仍以
     // exit 0 退出（假成功），若产物缺失则记录错误并返回 Err，让前端如实展示失败、
     // 允许重试，而不是误报「已安装」。已落盘的插件在上一步被核验并清除历史错误。
-    verify_installed_products(app_handle, ids, &preset_map, &last_output)?;
+    verify_installed_products(app_handle, &install_ids, &preset_map, &last_output)?;
+    remember_selected_presets(app_handle, ids, &preset_map)?;
 
     // Windows 极简模式专项修复
     if ids.iter().any(|id| id == "dsh-win-terminal-inspector") {
@@ -227,7 +246,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     let _ = window.emit(
         PREINSTALL_LOG_EVENT,
         PreinstallLogPayload {
-            line: format!("[harness] 已安装 {} 个插件", ids.len()),
+            line: format!("[harness] 已安装 {} 个插件", install_ids.len()),
         },
     );
 
@@ -237,24 +256,28 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
 
 /// 内置插件才需要解析捆绑目录（普通插件无此概念），避免无谓的资源探测
 fn bundled_dir_of(app_handle: &AppHandle, preset: &PreinstallPluginInfo) -> Option<PathBuf> {
-    if !preset.internal {
-        return None;
+    if preset.internal {
+        bundled_plugin_dir(app_handle, &preset.id)
+    } else {
+        preset_plugin_artifact_dir(app_handle, &preset.id)
     }
-    bundled_plugin_dir(app_handle, &preset.id)
 }
 
-/// 解析某预设的安装 spec（纯函数，便于单测）：内置插件固定为随包捆绑目录的
-/// `file:` 本地依赖（路径正确性由 [`super::internal::ensure`] 启动自愈核对）；
-/// 普通插件沿用清单声明。
+/// 解析某预设的安装 spec：内置插件使用 profile 内内容槽位的相对 `link:`；普通
+/// 插件沿用清单声明。
 ///
 /// 捆绑目录缺失时返回错误：内置插件缺失意味着构建期 prebuild 未执行或产物被
 /// 删，属发布缺陷而非用户侧的普通安装失败，错误前缀便于区分。
 fn preset_spec_for_install(
     preset: &PreinstallPluginInfo,
     bundled_dir: Option<PathBuf>,
+    profile: &Path,
 ) -> Result<String, String> {
     if !preset.internal {
-        return Ok(preset.spec.clone());
+        return match bundled_dir {
+            Some(dir) => stage_preset_plugin(profile, &preset.id, &dir),
+            None => Ok(preset.spec.clone()),
+        };
     }
     let dir = bundled_dir.ok_or_else(|| {
         format!(
@@ -262,7 +285,7 @@ fn preset_spec_for_install(
             preset.id
         )
     })?;
-    Ok(bundled_dep_spec(&dir))
+    stage_bundled_plugin(profile, &preset.id, &dir)
 }
 
 /// 校验本次安装是否真正落盘（防「假成功」）：pnpm v11 在 `allowBuilds` 阻断
@@ -359,6 +382,10 @@ pub(crate) fn build_plugin_envs(
         ),
         ("DSH_TELEMETRY_DISABLED".to_string(), "1".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
+        // 桌面进程没有交互式终端。Git HTTPS 失败时必须把错误返回日志，不能让
+        // Git Credential Manager 弹出登录窗口并无限等待用户操作。
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        ("GCM_INTERACTIVE".to_string(), "Never".to_string()),
         // 把预检解析出的 node 路径显式交给 pnpm/dsh shim（DSH_NODE 优先）：
         // shim 自身经 PATH 解析 node 可能与应用预检不一致（PATH 上的相对条目、
         // junction/符号链接、或子进程 PATH 布局差异），导致 pnpm shim 报
@@ -524,6 +551,40 @@ pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
             );
         }
     }
+    crate::config::update_store_dat_setting(app_handle, |setting| {
+        setting
+            .managed_preset_plugins
+            .retain(|selected| selected != id);
+    })?;
+    Ok(())
+}
+
+fn remember_selected_presets(
+    app_handle: &AppHandle,
+    ids: &[String],
+    presets: &HashMap<&str, &PreinstallPluginInfo>,
+) -> Result<(), String> {
+    let selected: Vec<String> = ids
+        .iter()
+        .filter(|id| {
+            presets
+                .get(id.as_str())
+                .is_some_and(|preset| !preset.internal)
+        })
+        .cloned()
+        .collect();
+    if selected.is_empty() {
+        return Ok(());
+    }
+    crate::config::update_store_dat_setting(app_handle, |setting| {
+        for id in &selected {
+            if !setting.managed_preset_plugins.contains(id) {
+                setting.managed_preset_plugins.push(id.clone());
+            }
+        }
+        setting.managed_preset_plugins.sort();
+        setting.managed_preset_plugins.dedup();
+    })?;
     Ok(())
 }
 
@@ -581,7 +642,7 @@ async fn run_single_plugin_command(
     ];
     args.extend(sub_args.iter().map(OsString::from));
 
-    let cwd = config::get_dsh_install_path(app_handle);
+    let cwd = core::active_core_dir(app_handle);
     log::info!("Running dsh plugin {action} for {id}");
     let (exit_code, output) =
         run_plugin_with_allow_build_retry(app_handle, &node, &args, &cwd, &envs, &window, action)
@@ -1280,18 +1341,10 @@ fn normalize_git_spec(spec: &str) -> String {
 /// **仅 Windows 需要引号。** `dsh plugin add` 在 JS 里用
 /// `spawnSync("pnpm", args, { shell: process.platform === "win32" })` 启动 pnpm：
 /// - Windows：`shell:true` 时 Node 只把参数按空格拼接、不做引号转义（官方文档
-///   DEP0190：arguments are not escaped, only concatenated）。内置插件的依赖是
-///   `link:<应用安装目录>`，而 Windows 安装目录常含空格（如
-///   `G:\Deepseek Harness Desktop\resources\internal-plugins\dsh-tauri`），拼进
-///   shell 后会被切碎成多个 spec，pnpm 报 `ERR_PNPM_SPEC_NOT_SUPPORTED` / 装成
-///   错误依赖，导致启动自愈每轮都重装（死循环）。包一层双引号让 cmd 把整条
-///   spec 视为一个参数；pnpm 解析后自行剥离引号，落盘 `package.json` 的值仍是
-///   不带引号的规范 `link:<路径>`（与 [`super::preset::bundled_dep_spec`] 的
-///   内核对账一致）。
+///   DEP0190：arguments are not escaped, only concatenated）。含空格的 spec 会被
+///   shell 切碎；包一层双引号让 cmd 将其作为一个参数。
 /// - macOS / Linux：`shell:false`，pnpm 以 argv 数组直接启动、空格天然保留，
 ///   **加引号反而把字面 `"` 当成包名的一部分传给 pnpm → 非法 spec → exit 1**。
-///   这是 issue #104 的根因：内置插件指向 `/Applications/Deepseek Harness
-///   Desktop.app/...`（含空格），每次启动自愈重装都失败、服务永远缺该插件。
 ///
 /// 因此只在 `cfg!(windows)` 且 spec 含空白时才包引号——普通 npm 包名 /
 /// `git+https://...` 无空格，原样透传，避免无谓改动。
@@ -1398,7 +1451,7 @@ mod tests {
         parse_store_major_from_modules_yaml, preset_spec_for_install, shell_quote_spec,
         silent_install_failure_detail, PreinstallPluginInfo,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
     #[test]
@@ -1486,33 +1539,58 @@ mod tests {
     }
 
     #[test]
-    fn install_spec_passthrough_for_regular_preset() {
-        // 普通插件：spec 原样返回，与捆绑目录无关
+    fn install_spec_uses_artifact_when_regular_preset_ships_one() {
         let p = preset("dshmarket", "dshmarket", false);
-        assert_eq!(preset_spec_for_install(&p, None).unwrap(), "dshmarket");
+        let root = std::env::temp_dir().join(format!(
+            "dsh-preset-plugin-stage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("package.json"), r#"{"name":"dshmarket"}"#).unwrap();
         assert_eq!(
-            preset_spec_for_install(&p, Some(PathBuf::from("/ignored"))).unwrap(),
+            preset_spec_for_install(&p, None, &profile).unwrap(),
             "dshmarket"
         );
+        let spec = preset_spec_for_install(&p, Some(source), &profile).unwrap();
+        assert!(spec.starts_with("dshmarket@file:"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn install_spec_uses_bundled_dir_for_internal_preset() {
-        // 内置插件：安装依赖为 link:<捆绑目录>（正斜杠规范形；pnpm 对
-        // `file:D:/...` 的盘符绝对路径会按相对解析，必须用 `link:`）
+        // 内置插件：复制到 profile 内内容槽位，并显式保留逻辑包名。
         let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
-        let dir = PathBuf::from("C:\\Apps\\dsh\\resources\\internal-plugins\\dsh-tauri");
-        assert_eq!(
-            preset_spec_for_install(&p, Some(dir)).unwrap(),
-            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
-        );
+        let root = std::env::temp_dir().join(format!(
+            "dsh-bundled-plugin-stage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(source.join("dist")).unwrap();
+        std::fs::write(source.join("package.json"), r#"{"name":"dsh-tauri"}"#).unwrap();
+        std::fs::write(source.join("dist/index.js"), "export {};").unwrap();
+        let spec = preset_spec_for_install(&p, Some(source), &profile).unwrap();
+        assert!(spec.starts_with("dsh-tauri@link:"));
+        let staged = PathBuf::from(spec.strip_prefix("dsh-tauri@link:").unwrap());
+        assert!(staged.join("dist/index.js").is_file());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn install_spec_errors_when_internal_bundle_missing() {
         // 内置插件捆绑目录缺失：发布缺陷，显式报错而非静默走 npm/git spec
         let p = preset("dsh-tauri", "dsh-tauri@0.2.0", true);
-        let err = preset_spec_for_install(&p, None).unwrap_err();
+        let err = preset_spec_for_install(&p, None, Path::new("/profile")).unwrap_err();
         assert!(err.starts_with("BUNDLED_PLUGIN_MISSING"));
         assert!(err.contains("dsh-tauri"));
     }

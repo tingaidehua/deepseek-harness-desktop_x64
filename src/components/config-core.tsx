@@ -16,13 +16,13 @@ import { Modal } from './modal'
 import { PanelHeader } from './panel-header'
 import { PanelState } from './panel-state'
 
+const VISIBLE_APP_CORE_VERSIONS = new Set(['0.1.2-alpha.1', '0.1.1-rc.2'])
+
 /**
  * 「核心」面板：管理 Harness 引擎来源与多版本。
  *
- * - 列表来自 `useDshCores`（`get_cores` 查询 + `setting_updated` 事件刷新）：
- *   `local` = 用户通过 CLI 全局安装的本地核心（存在时优先使用，需求 3）；
- *   `app-<tag>` = deepseek-harness-pkg 各发布版本（GitHub tags 拉取失败时
- *   降级为磁盘扫描，仅显示已下载版本）。
+ * - 列表来自 `useDshCores`（`get_cores` 查询 + `setting_updated` 事件刷新），
+ *   仅投影当前产品支持矩阵；完整发布历史和磁盘槽位仍由后端保留。
  * - 切换核心：持久化后**自动重启**服务（需求 5），重启走 harness store 的
  *   restart 流程（停止 → 重新启动 → 健康检查）。
  * - 下载版本：拉指定 tag 的发布资产到历史槽位（不激活），随后可切换；
@@ -40,15 +40,18 @@ export function ConfigCore() {
   /** 行内操作进行中的核心 id（该行的下载/卸载按钮显示 Spinner 并禁用重复点击） */
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  // 本地核心未检测到时不渲染 local 行（保留 local_missing_hint 提示）
-  const rows = cores.filter(core => !(core.source === 'local' && !core.present))
+  // 发布历史仍由后端完整保留；产品界面只展示当前支持矩阵，并按语义版本降序。
+  const rows = cores
+    .filter(core => core.source === 'app' && VISIBLE_APP_CORE_VERSIONS.has(core.version))
+    .slice()
+    .sort((a, b) => compareVersions(b.version, a.version))
   const localCore = cores.find(c => c.source === 'local')
 
   // 本地核心是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地核心」。
   // 版本行按 tags 最新在前，取第一个 app 版本作为"当前最新可用版本"（本地版本
   // 已是最新时不再展示更新入口，避免"已最新仍提示更新"）。
   const localVersion = localCore?.version ?? ''
-  const latestVersion = cores.find(c => c.source === 'app')?.version ?? ''
+  const latestVersion = rows[0]?.version ?? ''
   const hasLocalUpdate = !!(localCore?.present && localVersion && latestVersion && compareVersions(localVersion, latestVersion) < 0)
 
   /** 包裹行内操作：全局单例守卫 + 该行 busy 标记 */
@@ -128,7 +131,10 @@ export function ConfigCore() {
     }
     catch (err) {
       console.error('[ConfigCore] open dir failed:', err)
-      toast(t('core.open_dir_failed'), {})
+      toast(t('core.open_dir_failed'), {
+        variant: 'danger',
+        description: t('errors.operation_skipped'),
+      })
     }
   }
 

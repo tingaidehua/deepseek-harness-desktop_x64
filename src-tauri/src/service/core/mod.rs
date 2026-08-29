@@ -3,9 +3,9 @@
 //! 核心来源：
 //! - `local`：用户通过 CLI（npm/pnpm 全局安装）自行安装的 dsh，安装目录与
 //!   配置（`$DSH_HOME`）都不归桌面端管理；
-//! - `app`：桌面端预打包管理的 deepseek-harness-pkg 多版本副本。激活版本固定
-//!   位于 `dependencies/dsh`（既有代码全部依赖该路径），通过「核心」面板下载的
-//!   历史版本存放在 `dependencies/dsh-<tag>` 槽位，切换时两个目录互换。
+//! - `app`：桌面端预打包管理的 deepseek-harness-pkg 多版本副本。每个发行版
+//!   位于 `dependencies/cores/<tag>` 不可变槽位；切换只提交活动 tag，不移动核心
+//!   目录。旧版 `dependencies/dsh` 仅作为升级前回退。
 //!
 //! 启动优先级（需求）：本地核心存在时优先使用本地核心；未检测到才走预打包。
 //! 用户在「核心」面板可显式切回预打包；显式选择持久化在 store 设置
@@ -26,5 +26,7 @@ mod version;
 pub use local::{local_core_package_dir, update_local_core};
 // 以下重导出为对外公开 API（部分项当前链路未直接引用，属有意保留，见模块头）。
 #[allow(unused_imports)]
-pub use source::{active_dsh_binary, active_source, active_version, CoreSource, HarnessCore};
+pub use source::{
+    active_core_dir, active_dsh_binary, active_source, active_version, CoreSource, HarnessCore,
+};
 pub use version::{download_version, list, remove_version, set_active};

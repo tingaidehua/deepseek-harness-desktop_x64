@@ -1,6 +1,7 @@
 /* eslint-disable react/dom-no-unsafe-iframe-sandbox */
 import { CircleExclamation } from '@gravity-ui/icons'
-import { useRef } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { If } from 'react-if-lite'
 import { useStore } from 'valtio-define'
@@ -27,6 +28,7 @@ export function Webview() {
     internalLoading,
     iframeError,
     iframeKey,
+    iframeLoaded,
     iframeSrc,
     serviceUrl,
     recovery,
@@ -36,6 +38,25 @@ export function Webview() {
 
   useDesktopZoom(iframeRef)
   useIframeShim(iframeRef)
+
+  // WebView2 network error documents fire iframe `load` but cannot emit the DSH readiness
+  // handshake. Convert that silent failure into a recorded diagnostic and retryable error UI.
+  useEffect(() => {
+    if (!serviceHealthy || !iframeSrc || iframeLoaded)
+      return
+    const timeout = window.setTimeout(() => {
+      store.harness.markIframeError()
+      void invoke('report_frame_readiness', {
+        payload: {
+          state: 'timeout',
+          href: iframeSrc,
+          title: '',
+          loaderPresent: false,
+        },
+      }).catch(error => console.error('[frame-readiness] timeout report failed:', error))
+    }, 15_000)
+    return () => window.clearTimeout(timeout)
+  }, [iframeKey, iframeLoaded, iframeSrc, serviceHealthy])
 
   if (status === 'error') {
     return (
@@ -91,7 +112,6 @@ export function Webview() {
             src={iframeSrc}
             allow="clipboard-read; clipboard-write; fullscreen"
             sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-storage-access-by-user-activation"
-            onLoad={store.harness.markIframeLoaded}
             onError={store.harness.markIframeError}
             title={t('app.open_editor')}
           />

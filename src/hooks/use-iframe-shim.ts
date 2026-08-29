@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useEffect } from 'react'
 import { useEvent, useInterval, useMountedState } from 'react-use'
 import { queryClient } from '@/config/client'
+import { store } from '@/store'
 import { getIframeOrigin } from '@/utils/iframe'
 
 interface NativeNotificationMessage {
@@ -27,6 +28,25 @@ interface PluginErrorMessage {
   error?: string
   /** 记录动作：runtime / install / update（默认 runtime） */
   action?: string
+}
+
+interface FrameReadinessMessage {
+  source?: 'dsh-frame-readiness'
+  type?: 'dsh://frame-readiness'
+  state?: 'ready' | 'timeout' | 'error'
+  href?: string
+  title?: string
+  loaderPresent?: boolean
+}
+
+interface SurfaceDiagnosticsMessage {
+  source?: 'dsh-surface-diagnostics'
+  type?: 'dsh://surface-diagnostics'
+  origin?: string
+  loaderPresent?: boolean
+  transportOwnsHost?: boolean
+  checks?: Array<{ id: string, ok: boolean, detail: string }>
+  failures?: string[]
 }
 
 /**
@@ -102,6 +122,51 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
       .catch(error => console.error('[plugin-error] report_plugin_error failed:', error))
   }
 
+  /** Only a message from the real DSH frame can mark the embedded application ready. */
+  function handleFrameReadiness(event: MessageEvent<FrameReadinessMessage>) {
+    const data = event.data
+    if (!data || data.source !== 'dsh-frame-readiness' || data.type !== 'dsh://frame-readiness')
+      return
+    if (event.source !== iframeRef.current?.contentWindow)
+      return
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin || !data.state || !data.href)
+      return
+    const payload = {
+      state: data.state,
+      href: data.href,
+      title: data.title ?? '',
+      loaderPresent: Boolean(data.loaderPresent),
+    }
+    if (payload.state === 'ready' && payload.loaderPresent)
+      store.harness.markIframeLoaded()
+    else
+      store.harness.markIframeError()
+    void invoke('report_frame_readiness', { payload })
+      .catch(error => console.error('[frame-readiness] report failed:', error))
+  }
+
+  /** 接收 DSH 子页面自己的功能面探针，避免依赖人工点击发现适配回归。 */
+  function handleSurfaceDiagnostics(event: MessageEvent<SurfaceDiagnosticsMessage>) {
+    const data = event.data
+    if (!data || data.source !== 'dsh-surface-diagnostics' || data.type !== 'dsh://surface-diagnostics')
+      return
+    if (event.source !== iframeRef.current?.contentWindow)
+      return
+    const iframeOrigin = getIframeOrigin(iframeRef)
+    if (!iframeOrigin || event.origin !== iframeOrigin || data.origin !== iframeOrigin)
+      return
+    void invoke('report_surface_diagnostics', {
+      payload: {
+        origin: data.origin,
+        loaderPresent: Boolean(data.loaderPresent),
+        transportOwnsHost: Boolean(data.transportOwnsHost),
+        checks: Array.isArray(data.checks) ? data.checks : [],
+        failures: Array.isArray(data.failures) ? data.failures : [],
+      },
+    }).catch(error => console.error('[surface-diagnostics] report failed:', error))
+  }
+
   // 接收 iframe 的「剪贴板图片回退」请求：读取系统剪贴板图片并把 PNG data URL 回传，
   // 使 Linux/WebKitGTK 下 dsh iframe 的贴图（paste 事件拿不到图片）能走原生剪贴板通路。
   function handleClipboardImage(event: MessageEvent<ClipboardImageRequest>) {
@@ -139,6 +204,8 @@ export function useIframeShim(iframeRef: RefObject<HTMLIFrameElement | null>) {
 
   useEvent('message', handleMessage)
   useEvent('message', handlePluginError)
+  useEvent('message', handleFrameReadiness)
+  useEvent('message', handleSurfaceDiagnostics)
   useEvent('message', handleClipboardImage)
 
   // 系统通知点击 → 通知 iframe 聚焦对应会话

@@ -30,7 +30,7 @@ pub async fn install_preinstall_plugins(
     if let Some(hash) = plugin::current_preset_hash(&app_handle) {
         setting.preset_hash = Some(hash);
     }
-    config::set_store_dat_setting(&app_handle, setting);
+    config::set_store_dat_setting(&app_handle, setting)?;
     Ok(())
 }
 
@@ -48,7 +48,7 @@ pub async fn skip_preinstall_plugins(app_handle: AppHandle) -> Result<(), String
     if let Some(hash) = plugin::current_preset_hash(&app_handle) {
         setting.preset_hash = Some(hash);
     }
-    config::set_store_dat_setting(&app_handle, setting);
+    config::set_store_dat_setting(&app_handle, setting)?;
     Ok(())
 }
 
