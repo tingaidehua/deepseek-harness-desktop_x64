@@ -13,6 +13,7 @@
     "diagnostics:core-roundtrip": "node scripts/dsh-core-roundtrip.mjs",
     "diagnostics:surface": "node scripts/dsh-surface-fixture.mjs && node scripts/dsh-surface-matrix.mjs",
     "stress:single-instance": "node scripts/dsh-single-instance-stress.mjs",
+    "verify:bundled-plugins": "node scripts/verify-bundled-plugins.mjs",
     "verify:feature-tests": "node scripts/verify-feature-test-contracts.mjs",
     "preview": "vite preview",
     "tauri": "tsx scripts/predev.ts",

@@ -39,5 +39,13 @@
     { "id": "files", "labels": ["Files", "文件"] },
     { "id": "terminal", "labels": ["终端", "Terminal"] },
     { "id": "source-control", "labels": ["源代码管理", "Source Control"] }
-  ]
+  ],
+  "worktree": {
+    "modeAnchor": "[data-dsh-tauri-worktree-mode-anchor]",
+    "modeTrigger": ".dsh-tauri-worktree-mode-trigger",
+    "modeLabels": ["工作模式", "Mode"],
+    "localLabels": ["本地", "Local"],
+    "worktreeLabels": ["工作树", "Worktree"],
+    "statusPath": "/api/dsh-worktree/status"
+  }
 }

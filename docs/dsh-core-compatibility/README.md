@@ -23,7 +23,7 @@ Desktop 将 DSH 视为独立演进的产品，而不是需要冻结或原地打�
 ## 架构
 
 1. `dependencies/cores/<tag>` 保存一个不可变的官方或本地打包 DSH 制品；`dependencies/active-core` 只选择槽位，不复制或修改核心。
-2. `product-zlzhg` 从官方 Web bundles 初始化，并将用户配置与 Desktop 兼容行为分离。
+2. `product` 从官方 Web bundles 初始化，并将用户配置与 Desktop 兼容行为分离。
 3. `src-tauri/resources/core-compatibility.json` 是运行时选择、插件制备和功能面矩阵共同消费的唯一版本能力表；`service/core_compatibility.rs` 拒绝表中不存在的版本。
 4. Desktop 管理的插件持久化为逻辑选择。切换核心时，这些选择投影为以精确版本命名的内置和预设插件制品，并在启动前执行兼容门禁。
 5. 壳只消费稳定的运行结果。workflow 负责进程和端口；React 不按 DSH 版本分支。

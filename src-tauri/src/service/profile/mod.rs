@@ -19,7 +19,7 @@ use tauri::AppHandle;
 /// 桌面端默认档案（内置，不可删除）
 pub const DEFAULT_PROFILE: &str = "web";
 
-/// 智疗产品档案：从官方 web 模板初始化，与用户现有 web 档案隔离。
+/// Desktop 产品档案：从官方 web 模板初始化，与用户现有 web 档案隔离。
 pub const ZLZHG_PRODUCT_PROFILE: &str = "product-zlzhg";
 
 /// 新建档案的初始 bundles：web 模板（`@deepseek-ai/dsh-base` +
@@ -59,7 +59,7 @@ pub fn profile_dir_of(app_handle: &AppHandle, id: &str) -> PathBuf {
         .join(id)
 }
 
-/// 确保智疗产品档案存在，并保持官方 web profile 的用户 patch 语义。
+/// 确保 Desktop 产品档案存在，并保持官方 web profile 的用户 patch 语义。
 pub fn ensure_zlzhg_product_profile(app_handle: &AppHandle) -> Result<(), String> {
     let dir = profile_dir_of(app_handle, ZLZHG_PRODUCT_PROFILE);
     init_profile_dir(&dir, ZLZHG_PRODUCT_PROFILE)?;

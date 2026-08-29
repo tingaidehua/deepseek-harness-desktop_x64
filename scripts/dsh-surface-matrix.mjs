@@ -243,6 +243,32 @@ record('settings.plugins.shell-card', pluginText.includes('终端') || pluginTex
 
 await click(['返回应用', 'Back to app'])
 await new Promise(resolve => setTimeout(resolve, 250))
+const worktree = await evaluate(`(() => {
+  const anchor = document.querySelector(${JSON.stringify(contracts.worktree.modeAnchor)});
+  const trigger = document.querySelector(${JSON.stringify(contracts.worktree.modeTrigger)});
+  const sessionId = anchor?.getAttribute('data-dsh-tauri-worktree-mode-anchor') || '';
+  const text = String(trigger?.innerText || trigger?.getAttribute('aria-label') || '');
+  return { present: Boolean(anchor && trigger), sessionId, text };
+})()`)
+record(
+  'worktree.mode-selector',
+  worktree.present && contracts.worktree.localLabels.some(label => worktree.text.includes(label)),
+  `present=${worktree.present}; session=${worktree.sessionId || 'missing'}; text=${worktree.text}`,
+)
+if (worktree.sessionId) {
+  const status = await evaluate(`fetch(${JSON.stringify(contracts.worktree.statusPath)} + '?sessionId=' + encodeURIComponent(${JSON.stringify(worktree.sessionId)}), {
+    credentials: 'same-origin', cache: 'no-store'
+  }).then(async response => ({ status: response.status, body: await response.json() }))
+    .catch(error => ({ status: 0, body: { error: String(error) } }))`)
+  record(
+    'worktree.status-api',
+    status.status === 200 && ['local', 'worktree'].includes(status.body?.mode),
+    `status=${status.status}; mode=${status.body?.mode || 'missing'}; error=${status.body?.error || ''}`,
+  )
+}
+else {
+  record('worktree.status-api', false, 'mode selector did not expose a session id')
+}
 for (const tab of contracts.sidebarTabs) {
   let opened = await click(tab.labels)
   if (!opened) {

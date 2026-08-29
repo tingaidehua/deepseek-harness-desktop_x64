@@ -1,5 +1,5 @@
 /**
- * 可选扩展预打包：仅在 `DSH_DESKTOP_BUNDLE_EXTENSIONS=1` 时，把
+ * Desktop 扩展预打包：默认把
  * 内置插件和社区预设清单制备为按已验证 DSH 版本区分的随包产物，分别写入
  * `resources/internal-plugins/dsh-v<version>/<id>` 与
  * `resources/preset-plugin-artifacts/dsh-v<version>/<id>`。
@@ -9,8 +9,9 @@
  * - npm 包名（`name[@version]`）：从 npm registry 拉取已发布产物，跳过构建
  *   （发布包自带 lib/，如 dsh-tauri@0.2.0）。
  *
- * `pnpm build` 会调用本脚本，但默认只清理旧的扩展产物并退出，使官方 DSH
- * 基线不依赖任何 Desktop 插件。启用预打包也只生成可选资源，不会在启动时安装。
+ * `pnpm build` 会调用本脚本。正式构建默认携带 Desktop 插件的版本化制品；
+ * 只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=0` 的官方 DSH 基线测试才会清理它们。
+ * 预打包只生成安装包资源，不会在构建机的 profile 中安装或启用插件。
  *
  * 约束：仅用 Node 内置模块（零新增依赖）；需要 git 与 pnpm 在 PATH 上；
  * 构建机器需可访问 GitHub 与 npm registry。通过 `tsx scripts/prebuild.ts`
@@ -282,10 +283,13 @@ function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
 }
 
 function main(): void {
-  if (process.env.DSH_DESKTOP_BUNDLE_EXTENSIONS !== '1') {
+  const bundleExtensions = process.env.DSH_DESKTOP_BUNDLE_EXTENSIONS
+  if (bundleExtensions !== undefined && bundleExtensions !== '0' && bundleExtensions !== '1')
+    die(`DSH_DESKTOP_BUNDLE_EXTENSIONS 只能是 0 或 1，当前为: ${bundleExtensions}`)
+  if (bundleExtensions === '0') {
     rmSync(BUNDLE_ROOT, { recursive: true, force: true })
     rmSync(PRESET_BUNDLE_ROOT, { recursive: true, force: true })
-    console.log('[prebuild] Desktop extensions disabled; building the clean official DSH baseline')
+    console.log('[prebuild] Desktop extensions explicitly disabled; building the clean official DSH baseline')
     return
   }
   if (!existsSync(INTERNAL_PLUGINS_FILE)) {
