@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(windows)]
 use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 use super::installed::{installed_name, profile_dir, ProfilePackageJson};
@@ -37,6 +38,7 @@ struct InternalPluginsPhase {
 static ENSURE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
+    let started = Instant::now();
     let presets = load_presets(app_handle);
     let internal: Vec<_> = presets.iter().filter(|p| p.internal).collect();
     if internal.is_empty() {
@@ -57,6 +59,11 @@ pub(crate) async fn ensure(app_handle: &AppHandle) -> Result<(), String> {
     let _ = app_handle.emit(
         "internal-plugins-phase",
         InternalPluginsPhase { phase: "done" },
+    );
+    log::info!(
+        "STARTUP_PHASE internal_plugins duration_ms={} outcome={}",
+        started.elapsed().as_millis(),
+        if outcome.is_ok() { "ready" } else { "failed" }
     );
     outcome
 }
@@ -129,6 +136,10 @@ async fn ensure_inner(
         }
     }
     if need.is_empty() {
+        log::info!(
+            "INTERNAL_PLUGIN_CACHE_HIT: {} internal plugin(s) already match the active artifact set",
+            internal.len()
+        );
         return Ok(());
     }
 
@@ -282,8 +293,15 @@ fn remove_stale_plugin_entry(entry: &Path) -> std::io::Result<()> {
 ///
 /// 容忍：`link:`/`file:` 前缀缺失或两者混写（历史遗留 `file:` 安装值）；Windows
 /// 下路径大小写不敏感；尾部斜杠差异（pnpm 各版本落盘形式略有出入）。
-fn dep_matches_spec(actual: &str, expected: &str) -> bool {
+pub(super) fn dep_matches_spec(actual: &str, expected: &str) -> bool {
     let norm = |spec: &str| {
+        // `dsh plugin add` 接收 `<package>@link:<path>`，pnpm 写入 package.json 时
+        // 只保留 `link:<path>`。先剥离可选包名，再比较来源；否则每次启动都会把
+        // 健康链接误判为过期并重跑整批 pnpm 安装。
+        let spec = spec
+            .find("@link:")
+            .or_else(|| spec.find("@file:"))
+            .map_or(spec, |index| &spec[index + 1..]);
         let stripped = spec
             .strip_prefix("link:")
             .or_else(|| spec.strip_prefix("file:"))
@@ -470,6 +488,15 @@ mod tests {
         assert!(dep_matches_spec(
             "file:C:/Apps/dsh/resources/internal-plugins/dsh-tauri",
             expected
+        ));
+        // 安装 argv 带包名，而 pnpm 清单只保存来源 spec。
+        assert!(dep_matches_spec(
+            "link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri",
+            "dsh-tauri@link:C:/Apps/dsh/resources/internal-plugins/dsh-tauri"
+        ));
+        assert!(dep_matches_spec(
+            "file:C:/Apps/dsh/resources/preset-plugins/dshmarket",
+            "dshmarket@file:C:/Apps/dsh/resources/preset-plugins/dshmarket"
         ));
     }
 
