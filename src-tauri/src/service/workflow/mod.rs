@@ -18,6 +18,18 @@ use tauri::Manager;
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
 
+/// 控制插件要求退出壳但保留独立 Harness 时，只消费一次的退出策略。
+static PRESERVE_HARNESS_ON_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// 标记下一次 Desktop 退出不得结束 Harness，供独立控制插件稍后恢复外壳。
+pub fn preserve_harness_on_exit() {
+    PRESERVE_HARNESS_ON_EXIT.store(true, Ordering::SeqCst);
+}
+
+fn take_preserve_harness_on_exit() -> bool {
+    PRESERVE_HARNESS_ON_EXIT.swap(false, Ordering::SeqCst)
+}
+
 /// 当前进程内由桌面端创建的 Harness 根进程（PID + Windows 句柄）。
 ///
 /// PID 与句柄装在同一把锁的可选值里：`take()` 一次性成对取出，保证
@@ -1110,6 +1122,10 @@ pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 退出路径上不更新状态、不做异步等待，只结束当前应用持有的 Harness 进程树。
 pub fn stop_on_exit(app_handle: tauri::AppHandle, _port: u16) {
+    if take_preserve_harness_on_exit() {
+        log::info!("Desktop exited by control request; preserving the Harness process");
+        return;
+    }
     terminate_owned_process();
     // 正常退出路径同样清理清扫标记（崩溃路径才需要下次启动清扫）
     let _ = fs::remove_file(harness_pid_path(&app_handle));
@@ -1596,6 +1612,13 @@ mod tests {
                       TCP    127.0.0.1:30820   0.0.0.0:0    LISTENING    42\r\n";
         assert_eq!(netstat_owner_pid(output, 3082), Some(55652));
         assert_eq!(netstat_owner_pid(output, 3083), None);
+    }
+
+    #[test]
+    fn controlled_exit_preserves_harness_once() {
+        preserve_harness_on_exit();
+        assert!(take_preserve_harness_on_exit());
+        assert!(!take_preserve_harness_on_exit());
     }
 
     /// 命令行匹配：argv 整词精确等于 dsh 入口路径才算本应用服务实例。

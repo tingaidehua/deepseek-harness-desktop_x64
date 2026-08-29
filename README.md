@@ -69,7 +69,7 @@
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills/MCP 管理与导入技能仓库
 - [DSH Tauri Session](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session) — 归档、搜索、排序、分组和恢复会话
 - [DSH Tauri Rightclick](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — 为会话、工作区、正文、链接和输入框提供上下文操作
-- **DSH Desktop Control** — 向编码 Agent 提供认证诊断、结构化轨迹、并发压测和外壳崩溃恢复；运行在独立 Harness 进程中
+- **DSH Desktop Control** — 向编码 Agent 提供认证诊断、结构化轨迹、并发压测、保留 Harness 的受控退出和外壳恢复；运行在独立 Harness 进程中
 - 更多即将引入的插件...
 
 ## 快速开始

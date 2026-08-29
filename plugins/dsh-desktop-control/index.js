@@ -223,6 +223,15 @@ export async function apply(ctx) {
     },
   }))
   ctx.tools.register(defineTool({
+    name: 'desktop_control_shutdown',
+    description: 'Close the Desktop shell while preserving this independent DSH process, its session state, and the persisted recovery record.',
+    parameters: {},
+    output: textOutput(),
+    async execute() {
+      return JSON.stringify(await invokeDesktop('desktop.exit'), null, 2)
+    },
+  }))
+  ctx.tools.register(defineTool({
     name: 'desktop_control_recover',
     description: 'Start a new Desktop shell after confirming it is unavailable. The current DSH process remains alive and is adopted by the recovered shell.',
     parameters: {},

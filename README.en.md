@@ -75,7 +75,7 @@ First-party plugins bundled with the installer:
 - [DSH Tauri Panel Extension](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-panel-extension) — Skills and MCP management with skill repository import
 - [DSH Tauri Session](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-session) — session archive, search, sorting, grouping, and restore
 - [DSH Tauri Rightclick](https://github.com/dsh-tauri-desk/dsh-tauri-plugins/tree/main/packages/dsh-tauri-rightclick) — context actions for sessions, workspaces, content, links, and input fields
-- **DSH Desktop Control** — authenticated diagnostics, structured traces, concurrent stress tests, and shell crash recovery for coding agents; runs in the independent Harness process
+- **DSH Desktop Control** — authenticated diagnostics, structured traces, concurrent stress tests, controlled shell exit with Harness preservation, and crash recovery for coding agents; runs in the independent Harness process
 - More plugins coming soon...
 
 ## Quick Start

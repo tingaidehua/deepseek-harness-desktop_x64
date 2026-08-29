@@ -92,7 +92,7 @@ pub fn trace_path(app_handle: &AppHandle) -> PathBuf {
         .join("desktop-control-trace.jsonl")
 }
 
-fn operation_catalog() -> [OperationDescription; 9] {
+fn operation_catalog() -> [OperationDescription; 10] {
     [
         OperationDescription {
             id: "control.catalog",
@@ -138,6 +138,11 @@ fn operation_catalog() -> [OperationDescription; 9] {
             id: "stress.snapshot",
             mutating: false,
             description: "并发执行诊断快照并返回延迟与失败统计",
+        },
+        OperationDescription {
+            id: "desktop.exit",
+            mutating: true,
+            description: "退出 Desktop 壳并保留独立 Harness，等待控制插件恢复",
         },
     ]
 }
@@ -307,6 +312,14 @@ async fn dispatch(app_handle: AppHandle, operation: &str, args: &Value) -> Resul
             Ok(json!({ "text": read_tail(&trace_path(&app_handle), max_bytes)? }))
         }
         "stress.snapshot" => stress_snapshot(app_handle, args).await,
+        "desktop.exit" => {
+            crate::service::workflow::preserve_harness_on_exit();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                app_handle.exit(0);
+            });
+            Ok(json!({ "accepted": true, "harnessPreserved": true }))
+        }
         _ => Err(format!("CONTROL_UNKNOWN_OPERATION: {operation}")),
     }
 }
