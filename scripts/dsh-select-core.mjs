@@ -81,7 +81,8 @@ const core = cores.find(item => item.version === requestedVersion && item.presen
 if (!core)
   throw new Error(`CORE_SELECT_NOT_INSTALLED: ${requestedVersion}`)
 
-await evaluate(`globalThis.__TAURI_INTERNALS__.invoke("set_active_core", { id: ${JSON.stringify(core.id)} })`)
+if (!core.active)
+  await evaluate(`globalThis.__TAURI_INTERNALS__.invoke("set_active_core", { id: ${JSON.stringify(core.id)} })`)
 await evaluate('globalThis.__TAURI_INTERNALS__.invoke("restart_harness")')
 
 const deadline = Date.now() + 60_000
