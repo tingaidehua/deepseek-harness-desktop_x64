@@ -23,7 +23,8 @@ import { pollReadiness } from '@/utils/readiness'
 import { toast } from '@/utils/toast'
 import { harnessUpdater } from '../harness-updater'
 
-const MAX_RETRIES = 8
+const MAX_RETRIES = 40
+const STARTUP_POLL_INTERVAL_MS = 250
 const IFRAME_LOAD_TIMEOUT = 20000
 /** 启动失败时从服务日志尾部挑选的原始行上限（ANSI 清洗后按行截断） */
 const LOG_TAIL_MAX_BYTES = 16 * 1024
@@ -328,7 +329,7 @@ export const harness = defineStore({
     async recoverReadiness(token: number) {
       const result = await pollReadiness({
         probe: checkHealthViaProxy,
-        intervalMs: 2000,
+        intervalMs: 500,
         shouldContinue: () => token === bootToken && this.serviceRunning && !this.serviceHealthy,
       })
       if (token !== bootToken)
@@ -371,7 +372,7 @@ export const harness = defineStore({
 
         const result = await pollReadiness({
           probe: checkHealthViaProxy,
-          intervalMs: 2000,
+          intervalMs: STARTUP_POLL_INTERVAL_MS,
           maxAttempts: MAX_RETRIES,
           shouldContinue: () => token === undefined || token === bootToken,
         })

@@ -13,6 +13,7 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tauri::Manager;
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
@@ -765,6 +766,7 @@ pub async fn restart(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 /// 启动 Harness 服务进程
 pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let launch_started = Instant::now();
     let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
     // 活动核心的 dsh 入口（本地核心优先，未检测到走预打包）
@@ -864,21 +866,36 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
     // 核心选择只决定协议世代；Desktop 管理插件必须在启动前投影为该世代的
     // 离线产物。失败时中止本次启动，不能让 Loader 载入混合依赖。
+    let phase_started = Instant::now();
     crate::service::plugin::rebind_for_active_core(&app_handle).await?;
+    log::info!(
+        "STARTUP_PHASE plugin_projection duration_ms={}",
+        phase_started.elapsed().as_millis()
+    );
     // profile 只声明 bundle 与额外插件；DSH 制品自带的核心包必须由当前激活
     // `dependencies/dsh` 提供。切换版本后若保留旧的 profile-local 核心包，会把
     // 旧 React 模块表与新后端插件混装。先移除这些重复依赖并让 pnpm 清理旧产物。
+    let phase_started = Instant::now();
     if let Err(e) = crate::service::plugin::reconcile_shipped_dependencies(&app_handle).await {
         log::warn!("reconcile profile with active DSH packages failed: {e}");
     }
+    log::info!(
+        "STARTUP_PHASE core_dependency_reconcile duration_ms={}",
+        phase_started.elapsed().as_millis()
+    );
     // 预装插件完整性自检：清单引用的预装插件若在 node_modules 缺失产物，服务
     // 启动时 loader 会对每个缺失插件抛 ERR_MODULE_NOT_FOUND 而整体失败（issue
     // #90，日志特征 `Cannot find package`）。用 `pnpm install` 以现有 manifest +
     // lockfile 为准重建依赖图修复；修复失败只告警并给缺失插件记录错误标记
     // （启动失败场景由前端 recovery 对话框兜底，见 service::plugin::recovery）。
+    let phase_started = Instant::now();
     if let Err(e) = crate::service::plugin::ensure_preset_plugins(&app_handle).await {
         log::warn!("ensure preset plugins failed: {e}");
     }
+    log::info!(
+        "STARTUP_PHASE plugin_integrity duration_ms={}",
+        phase_started.elapsed().as_millis()
+    );
     crate::service::plugin::compatibility::require_active_compatible(&app_handle)?;
     let mut envs: HashMap<String, String> = HashMap::new();
     envs.insert(
@@ -986,7 +1003,12 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     utils::rotate_service_log(&log_path, 3);
     utils::clear_authenticated_service_url();
 
+    log::info!(
+        "STARTUP_PHASE pre_spawn duration_ms={}",
+        launch_started.elapsed().as_millis()
+    );
     log::info!("Starting Harness process");
+    let process_spawn_started = Instant::now();
 
     // Windows 打包版是 GUI 进程（没有控制台）。直接以 CREATE_NO_WINDOW 启动
     // node 会让 dsh 派生的子进程各自新建可见控制台窗口（频繁闪烁 cmd 黑窗），
@@ -1086,7 +1108,11 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             );
             // 记录 PID+端口供下次启动清扫崩溃残留的孤儿实例（见 sweep_orphan_harness）
             persist_harness_pid(&app_handle, pid, setting.port);
-            spawn_output_readers(stdout, stderr, log_path);
+            spawn_output_readers(stdout, stderr, log_path, process_spawn_started);
+            log::info!(
+                "STARTUP_PHASE process_spawn duration_ms={} pid={pid}",
+                process_spawn_started.elapsed().as_millis()
+            );
             Ok(())
         }
         Err(e) => {

@@ -1,9 +1,13 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DSH_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DSH_MAX_BACKUPS: usize = 3;
@@ -198,20 +202,34 @@ pub fn is_port_in_use(port: u16) -> bool {
 /// - `stdout`: 子进程的标准输出
 /// - `stderr`: 子进程的标准错误输出
 /// - `log_path`: 前端日志面板读取的日志文件
-pub fn spawn_output_readers<R1, R2>(stdout: Option<R1>, stderr: Option<R2>, log_path: PathBuf)
-where
+pub fn spawn_output_readers<R1, R2>(
+    stdout: Option<R1>,
+    stderr: Option<R2>,
+    log_path: PathBuf,
+    spawned_at: Instant,
+) where
     R1: Read + Send + 'static,
     R2: Read + Send + 'static,
 {
+    let readiness_logged = Arc::new(AtomicBool::new(false));
     // 在独立线程中读取 stdout
     if let Some(stdout) = stdout {
         let log_path = log_path.clone();
+        let readiness_logged = readiness_logged.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
                         let safe_line = capture_authenticated_service_url(&line);
+                        if safe_line.contains("authenticated URL captured by Desktop")
+                            && !readiness_logged.swap(true, Ordering::SeqCst)
+                        {
+                            log::info!(
+                                "STARTUP_PHASE dsh_authenticated_url duration_ms={}",
+                                spawned_at.elapsed().as_millis()
+                            );
+                        }
                         log::info!(target: "dsh", "{}", safe_line);
                         append_log(&log_path, &safe_line);
                     }
@@ -226,12 +244,21 @@ where
 
     // 在独立线程中读取 stderr
     if let Some(stderr) = stderr {
+        let readiness_logged = readiness_logged.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 match line {
                     Ok(line) => {
                         let safe_line = capture_authenticated_service_url(&line);
+                        if safe_line.contains("authenticated URL captured by Desktop")
+                            && !readiness_logged.swap(true, Ordering::SeqCst)
+                        {
+                            log::info!(
+                                "STARTUP_PHASE dsh_authenticated_url duration_ms={}",
+                                spawned_at.elapsed().as_millis()
+                            );
+                        }
                         log::warn!(target: "dsh", "{}", safe_line);
                         append_log(&log_path, &safe_line);
                     }
