@@ -114,7 +114,7 @@ pub async fn install(app_handle: &AppHandle, ids: &[String]) -> Result<(), Strin
     cli::ensure_shims(app_handle)?;
 
     let node = config::get_node_binary_path(app_handle);
-    // 活动核心的 dsh 入口：本地核心存在时用本地 CLI，否则预打包
+    // 活动内核的 dsh 入口：本地内核存在时用本地 CLI，否则预打包
     let dsh_bin = core::active_dsh_binary(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());
@@ -532,7 +532,7 @@ pub async fn remove(app_handle: &AppHandle, id: &str) -> Result<(), String> {
     // （直接改清单 + 删目录 + 清 lockfile），确保插件真正移除
     // （参考 dsh-market 的「卸载后核验」约定：确认插件离开 profile 才算成功）。
     if is_installed(app_handle, id) {
-        // 第三方可卸载插件才允许离线兜底；核心/官方等受保护包即使残留也不强删
+        // 第三方可卸载插件才允许离线兜底；内核/官方等受保护包即使残留也不强删
         // （`uninstall_recovery` 对它们会拒绝）。
         if is_actionable_plugin_ref(id) {
             let outcome = match &command_result {

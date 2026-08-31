@@ -277,7 +277,7 @@ fn validate_download_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 校验下载内容的 SHA-256，拒绝未通过完整性校验的运行时与核心包。
+/// 校验下载内容的 SHA-256，拒绝未通过完整性校验的运行时与内核包。
 pub fn verify_sha256(buffer: &[u8], expected: &str) -> Result<(), String> {
     let expected = expected
         .strip_prefix("sha256:")
@@ -843,7 +843,7 @@ pub async fn fetch_latest_dsh_pkg_info() -> Result<LatestDshPkg, String> {
     fetch_dsh_pkg_asset(&pinned_tag).await
 }
 
-/// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供核心面板按版本下载。
+/// 拉取指定 tag 的发行版信息（资产 URL + 可信摘要），供内核面板按版本下载。
 ///
 /// 与 `fetch_latest_dsh_pkg_info` 同源策略：优先走 api.github.com
 /// （`/releases/tags/{tag}` 拿资产与摘要），失败时资产 URL 平台确定性推导

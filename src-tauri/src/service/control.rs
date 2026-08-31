@@ -10,13 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 const PROTOCOL: &str = "dsh-desktop-control-jsonl-v1";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_TRACE_BYTES: u64 = 5 * 1024 * 1024;
+const CORE_SWITCH_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,7 +93,7 @@ pub fn trace_path(app_handle: &AppHandle) -> PathBuf {
         .join("desktop-control-trace.jsonl")
 }
 
-fn operation_catalog() -> [OperationDescription; 11] {
+fn operation_catalog() -> [OperationDescription; 15] {
     [
         OperationDescription {
             id: "control.catalog",
@@ -102,7 +103,12 @@ fn operation_catalog() -> [OperationDescription; 11] {
         OperationDescription {
             id: "diagnostics.snapshot",
             mutating: false,
-            description: "读取核心、插件和真实页面功能面快照",
+            description: "读取内核、插件和真实页面功能面快照",
+        },
+        OperationDescription {
+            id: "shell.status",
+            mutating: false,
+            description: "读取内嵌壳资源及 React 挂载调用链",
         },
         OperationDescription {
             id: "runtime.info",
@@ -122,12 +128,22 @@ fn operation_catalog() -> [OperationDescription; 11] {
         OperationDescription {
             id: "core.list",
             mutating: false,
-            description: "列出可用核心及当前选择",
+            description: "列出可用内核及当前选择",
+        },
+        OperationDescription {
+            id: "core.activate",
+            mutating: true,
+            description: "切换到已安装内核、重绑定插件并启动 Harness",
         },
         OperationDescription {
             id: "profile.list",
             mutating: false,
             description: "列出档案及当前选择",
+        },
+        OperationDescription {
+            id: "profile.activate",
+            mutating: true,
+            description: "切换到已有档案、重投影插件并重启 Harness",
         },
         OperationDescription {
             id: "logs.bundle",
@@ -148,6 +164,11 @@ fn operation_catalog() -> [OperationDescription; 11] {
             id: "desktop.exit",
             mutating: true,
             description: "退出 Desktop 壳并保留独立 Harness，等待控制插件恢复",
+        },
+        OperationDescription {
+            id: "desktop.shutdown",
+            mutating: true,
+            description: "停止 Harness 后退出 Desktop，用于完整冷启动回归",
         },
     ]
 }
@@ -237,6 +258,13 @@ fn arg_usize(args: &Value, key: &str, default: usize, maximum: usize) -> Result<
     Ok(value as usize)
 }
 
+fn required_string<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("CONTROL_INVALID_ARGUMENT: {key} must be a non-empty string"))
+}
+
 async fn stress_snapshot(app_handle: AppHandle, args: &Value) -> Result<Value, String> {
     let iterations = arg_usize(args, "iterations", 20, 1_000)?;
     let concurrency = arg_usize(args, "concurrency", 4, 64)?.min(iterations);
@@ -296,6 +324,8 @@ async fn dispatch(app_handle: AppHandle, operation: &str, args: &Value) -> Resul
             serde_json::to_value(crate::diagnostics::active_snapshot(&app_handle)?)
                 .map_err(|error| format!("CONTROL_SERIALIZE: {error}"))
         }
+        "shell.status" => serde_json::to_value(crate::diagnostics::shell_status(&app_handle))
+            .map_err(|error| format!("CONTROL_SERIALIZE: {error}")),
         "runtime.info" => {
             let port = crate::config::get_store_dat_setting(&app_handle).port;
             serde_json::to_value(crate::config::runtime_info(&app_handle, port))
@@ -316,8 +346,67 @@ async fn dispatch(app_handle: AppHandle, operation: &str, args: &Value) -> Resul
         })),
         "core.list" => serde_json::to_value(crate::service::core::list(&app_handle).await)
             .map_err(|error| format!("CONTROL_SERIALIZE: {error}")),
+        "core.activate" => {
+            let id = required_string(args, "id")?;
+            let selected = crate::service::core::set_active(&app_handle, id).await?;
+            crate::service::workflow::start(app_handle.clone()).await?;
+            let deadline = Instant::now() + CORE_SWITCH_READY_TIMEOUT;
+            loop {
+                match crate::service::workflow::proxy_health_check(
+                    &app_handle,
+                    crate::config::get_store_dat_setting(&app_handle).port,
+                )
+                .await
+                {
+                    Ok(_) => break,
+                    Err(error) if Instant::now() < deadline => {
+                        log::debug!("core switch waiting for authenticated runtime: {error}");
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    Err(error) => return Err(format!("CORE_SWITCH_RUNTIME_NOT_READY: {error}")),
+                }
+            }
+            app_handle
+                .emit("harness-runtime-replaced", ())
+                .map_err(|error| format!("CORE_SWITCH_SHELL_REFRESH: {error}"))?;
+            serde_json::to_value(selected).map_err(|error| format!("CONTROL_SERIALIZE: {error}"))
+        }
         "profile.list" => serde_json::to_value(crate::service::profile::list(&app_handle))
             .map_err(|error| format!("CONTROL_SERIALIZE: {error}")),
+        "profile.activate" => {
+            let id = required_string(args, "id")?;
+            let profiles = crate::service::profile::list(&app_handle);
+            if !profiles.iter().any(|profile| profile.id == id) {
+                return Err(format!("PROFILE_NOT_FOUND: profile {id} does not exist"));
+            }
+            let previous = crate::service::profile::active_profile(&app_handle);
+            let was_running = crate::service::workflow::has_owned_process();
+            if was_running {
+                crate::service::workflow::stop(app_handle.clone()).await?;
+            }
+            let selected = match crate::service::profile::set_active(&app_handle, id) {
+                Ok(selected) => selected,
+                Err(error) => {
+                    if was_running {
+                        let _ = crate::service::workflow::start(app_handle.clone()).await;
+                    }
+                    return Err(error);
+                }
+            };
+            if let Err(error) = crate::service::workflow::start(app_handle.clone()).await {
+                let rollback = crate::service::profile::set_active(&app_handle, &previous)
+                    .and_then(|_| Ok(()));
+                let restart = if was_running {
+                    crate::service::workflow::start(app_handle.clone()).await
+                } else {
+                    Ok(())
+                };
+                return Err(format!(
+                    "PROFILE_ACTIVATE_START: {error}; rollback={rollback:?}; restart={restart:?}"
+                ));
+            }
+            serde_json::to_value(selected).map_err(|error| format!("CONTROL_SERIALIZE: {error}"))
+        }
         "logs.bundle" => Ok(json!({ "text": crate::bridge::read_run_logs(app_handle).await? })),
         "trace.read" => {
             let max_bytes = arg_usize(args, "maxBytes", 128 * 1024, 1024 * 1024)?;
@@ -331,6 +420,14 @@ async fn dispatch(app_handle: AppHandle, operation: &str, args: &Value) -> Resul
                 app_handle.exit(0);
             });
             Ok(json!({ "accepted": true, "harnessPreserved": true }))
+        }
+        "desktop.shutdown" => {
+            crate::service::workflow::stop(app_handle.clone()).await?;
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                app_handle.exit(0);
+            });
+            Ok(json!({ "accepted": true, "harnessPreserved": false }))
         }
         _ => Err(format!("CONTROL_UNKNOWN_OPERATION: {operation}")),
     }
@@ -470,7 +567,7 @@ pub fn start(app_handle: AppHandle) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{arg_usize, generated_token, operation_catalog, PROTOCOL};
+    use super::{arg_usize, generated_token, operation_catalog, required_string, PROTOCOL};
     use serde_json::json;
 
     #[test]
@@ -491,6 +588,17 @@ mod tests {
         assert_eq!(arg_usize(&json!({}), "iterations", 20, 1000).unwrap(), 20);
         assert!(arg_usize(&json!({ "iterations": 0 }), "iterations", 20, 1000).is_err());
         assert!(arg_usize(&json!({ "iterations": 1001 }), "iterations", 20, 1000).is_err());
+    }
+
+    #[test]
+    fn string_arguments_are_required_and_non_empty() {
+        assert_eq!(
+            required_string(&json!({ "id": "app-release" }), "id").unwrap(),
+            "app-release"
+        );
+        assert!(required_string(&json!({}), "id").is_err());
+        assert!(required_string(&json!({ "id": "" }), "id").is_err());
+        assert!(required_string(&json!({ "id": 1 }), "id").is_err());
     }
 
     #[test]

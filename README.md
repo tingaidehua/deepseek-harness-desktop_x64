@@ -113,8 +113,8 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
 ┌──────────────────────┴───────────────────────┐
 │ Tauri Rust 后端                              │
 │   service/download  安装器 + 解压            │
-│   service/core      Harness 核心多版本管理   │
-│ service/core_compatibility 核心协议记录      │
+│   service/core      Harness 内核多版本管理   │
+│ service/core_compatibility 内核协议记录      │
 │   service/profile   dsh 档案管理             │
 │   service/plugin    插件卸载 / 升级          │
 │   service/cli       dsh 命令 shim + PATH     │
@@ -132,9 +132,9 @@ brew install dsh-tauri-desk/desktop/deepseek-harness
         http://127.0.0.1:3080/  ← 内嵌界面
 ```
 
-Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时提醒下载更新；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地核心会被优先使用。
+Harness 发行版由 [deepseek-harness-pkg](https://github.com/dsh-tauri-desk/deepseek-harness-pkg) 构建发布。每次启动都会对比最新发行版，本地过期时提醒下载更新；GitHub 不可达时保留本地安装。通过 CLI 全局安装的本地内核会被优先使用。
 
-Desktop 会创建 `product` 档案作为干净的产品基线。该档案只叠加官方 `dsh-base` 与 `dsh-web-app`；`service/core_compatibility.rs` 将每个精确测试核心版本映射到明确协议能力和应用私有 overlay，不写入 profile，也不修改 DSH 安装目录。正式构建默认携带按精确核心版本生成的 Desktop 扩展制品；只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=0` 的官方 DSH 基线测试才不携带它们。WebView 使用 `dsh.tauri.localhost` 同站点子域承接官方严格认证 cookie，并避开 Tauri 自身的 `tauri.localhost` 资源协议；实际 DSH 监听与外部浏览器地址仍是 `127.0.0.1`。架构与逐版本中文记录见 [DSH 核心兼容演进](./docs/dsh-core-compatibility/README.md)。
+Desktop 会创建 `product` 档案作为干净的产品基线。该档案只叠加官方 `dsh-base` 与 `dsh-web-app`；`service/core_compatibility.rs` 将每个精确测试内核版本映射到明确协议能力和应用私有 overlay，不写入 profile，也不修改 DSH 安装目录。正式构建默认携带按精确内核版本生成的 Desktop 扩展制品；只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=0` 的官方 DSH 基线测试才不携带它们。WebView 使用 `dsh.tauri.localhost` 同站点子域承接官方严格认证 cookie，并避开 Tauri 自身的 `tauri.localhost` 资源协议；实际 DSH 监听与外部浏览器地址仍是 `127.0.0.1`。架构与逐版本中文记录见 [DSH 内核兼容演进](./docs/dsh-core-compatibility/README.md)。
 
 ## 说明
 

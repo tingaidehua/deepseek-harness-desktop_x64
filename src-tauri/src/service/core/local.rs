@@ -1,6 +1,6 @@
-//! 本地核心发现：探测用户通过 CLI（npm/pnpm 全局安装）自行安装的 dsh。
+//! 本地内核发现：探测用户通过 CLI（npm/pnpm 全局安装）自行安装的 dsh。
 //!
-//! 只基于文件系统与 PATH 探测，不派生子进程。核心来源判定见
+//! 只基于文件系统与 PATH 探测，不派生子进程。内核来源判定见
 //! [`crate::service::core`] 模块头的说明。
 
 use crate::service::cli;
@@ -9,7 +9,7 @@ use tauri::AppHandle;
 #[cfg(unix)]
 use tauri::Manager;
 
-/// 解析出的本地核心信息
+/// 解析出的本地内核信息
 pub(super) struct LocalCore {
     /// 包目录（`node_modules/@deepseek-ai/dsh`）
     pub(super) package_dir: PathBuf,
@@ -161,7 +161,7 @@ fn read_package_version(dir: &Path) -> Option<String> {
         .map(|s| s.trim_start_matches('v').to_string())
 }
 
-/// 本地核心：包目录 + 版本 + bin.js 入口。任一环节缺失视为不存在。
+/// 本地内核：包目录 + 版本 + bin.js 入口。任一环节缺失视为不存在。
 pub(super) fn local_core(app_handle: &AppHandle) -> Option<LocalCore> {
     let package_dir = user_dsh_package_dir(app_handle)?;
     let version = read_package_version(&package_dir)?;
@@ -176,12 +176,12 @@ pub(super) fn local_core(app_handle: &AppHandle) -> Option<LocalCore> {
     })
 }
 
-/// 本地核心的包目录（「打开目录」入口用）；未检测到本地核心时返回 None。
+/// 本地内核的包目录（「打开目录」入口用）；未检测到本地内核时返回 None。
 pub fn local_core_package_dir(app_handle: &AppHandle) -> Option<PathBuf> {
     local_core(app_handle).map(|c| c.package_dir)
 }
 
-/// 本地核心是否由 pnpm 全局布局管理（决定更新走 pnpm 还是 npm）。
+/// 本地内核是否由 pnpm 全局布局管理（决定更新走 pnpm 还是 npm）。
 fn local_core_uses_pnpm(app_handle: &AppHandle) -> bool {
     let Some(bin) = find_user_dsh_bin(app_handle) else {
         return false;
@@ -204,7 +204,7 @@ fn local_core_uses_pnpm(app_handle: &AppHandle) -> bool {
     !npm_layout && pnpm_layout
 }
 
-/// 通过用户包管理器 CLI 更新本地核心（npm `update -g` / pnpm `add -g`）。
+/// 通过用户包管理器 CLI 更新本地内核（npm `update -g` / pnpm `add -g`）。
 ///
 /// 返回更新后的版本号。失败返回错误（附进程输出尾部，便于排查）。
 pub async fn update_local_core(app_handle: AppHandle) -> Result<String, String> {

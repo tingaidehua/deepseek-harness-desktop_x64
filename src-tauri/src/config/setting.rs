@@ -28,8 +28,8 @@ pub struct Setting {
     /// 内容有变更 → 重新进入预设引导。`None` = 老用户升级（无基线）→ 弹一次建立基线。
     #[serde(default)]
     pub preset_hash: Option<String>,
-    /// 用户选择的社区预设逻辑 id。物理插件产物随核心协议世代重建，不能把当前
-    /// profile 中某个世代的依赖声明当成跨核心选择状态。
+    /// 用户选择的社区预设逻辑 id。物理插件产物随内核协议世代重建，不能把当前
+    /// profile 中某个世代的依赖声明当成跨内核选择状态。
     #[serde(default)]
     pub managed_preset_plugins: Vec<String>,
     /// 旧版 AppData `data/dsh` → 官方 `$DSH_HOME`（~/.dsh）数据迁移是否已完成。
@@ -40,8 +40,8 @@ pub struct Setting {
     /// 桌面端启动服务与插件管理都以它为准（见 service::profile）。
     #[serde(default = "default_active_profile")]
     pub active_profile: String,
-    /// 活动核心的显式选择：`Some("local")` = 用户 CLI 安装的本地核心，
-    /// `Some("app")` = 桌面端预打包核心；`None` = 自动（本地核心存在时优先）。
+    /// 活动内核的显式选择：`Some("local")` = 用户 CLI 安装的本地内核，
+    /// `Some("app")` = 桌面端预打包内核；`None` = 自动（本地内核存在时优先）。
     #[serde(default)]
     pub active_core: Option<String>,
     /// 用户手动设置的服务端口（设置页「端口」输入，见 bridge::config）。
@@ -118,10 +118,10 @@ impl Default for Setting {
 
 /// Store 持久化文件名：debug 构建与生产隔离（各自独立文件）。
 ///
-/// store（端口、installed、active_core 等）属于「应用数据」而非共用核心——
+/// store（端口、installed、active_core 等）属于「应用数据」而非共用内核——
 /// 生产默认 3080、开发默认 3081，共用一份 store 会让两边端口一路漂移
 /// （release 读到开发写入的 3081 后把 3080 让出，开发下次又从 3081 漂走）
-/// 并相互污染安装/核心等状态。
+/// 并相互污染安装/内核等状态。
 fn store_dat_file_name() -> &'static str {
     if cfg!(debug_assertions) {
         STORE_DAT_DEV_FILE

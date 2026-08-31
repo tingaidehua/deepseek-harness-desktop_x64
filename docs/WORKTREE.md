@@ -6,7 +6,7 @@
 
 输入框的「工作模式」选择器提供「本地」和「工作树」。选择「工作树」后，下一条消息会在隔离目录中开始新会话。工作树会话的输入框上方会显示状态条、创建日志、「检出本地」和「放弃」操作，会话列表同时显示分支标识。
 
-正式构建默认把该插件的 Host 与 Client 制品按精确 DSH 核心版本放入安装包。`pnpm verify:bundled-plugins` 会阻止缺少工作树 Host 路由或 Client 界面的发布。只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=0` 的干净 DSH 基线测试不携带 Desktop 插件。
+正式构建默认把该插件的 Host 与 Client 制品按精确 DSH 内核版本放入安装包。`pnpm verify:bundled-plugins` 会阻止缺少工作树 Host 路由或 Client 界面的发布。只有显式设置 `DSH_DESKTOP_BUNDLE_EXTENSIONS=0` 的干净 DSH 基线测试不携带 Desktop 插件。
 
 ## 数据与控制流
 

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +48,51 @@ pub struct SurfaceDiagnostic {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShellAssetCheck {
+    pub path: String,
+    pub present: bool,
+    pub fallback: bool,
+    pub mime_type: Option<String>,
+    pub size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellAssetDiagnostic {
+    pub state: String,
+    pub embedded_asset_count: usize,
+    pub embedded_paths: Vec<String>,
+    pub checks: Vec<ShellAssetCheck>,
+    pub observed_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellRuntimeEvent {
+    pub stage: String,
+    pub href: String,
+    pub resource: String,
+    pub message: String,
+    pub root_child_count: usize,
+    pub observed_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellRuntimeDiagnostic {
+    pub pid: u32,
+    pub events: Vec<ShellRuntimeEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellStatusDiagnostic {
+    pub assets: ShellAssetDiagnostic,
+    pub runtime: Option<ShellRuntimeDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiagnosticsSnapshot {
     pub active_core_tag: Option<String>,
     pub recorded_release_tag: Option<String>,
@@ -58,6 +104,8 @@ pub struct DiagnosticsSnapshot {
     pub plugin_compatibility: crate::service::plugin::compatibility::CompatibilityReport,
     pub webview_route: Option<WebviewRouteDiagnostic>,
     pub surface: Option<SurfaceDiagnostic>,
+    pub shell_assets: Option<ShellAssetDiagnostic>,
+    pub shell_runtime: Option<ShellRuntimeDiagnostic>,
 }
 
 fn webview_diagnostic_path(app_data: &Path) -> PathBuf {
@@ -66,6 +114,176 @@ fn webview_diagnostic_path(app_data: &Path) -> PathBuf {
 
 fn surface_diagnostic_path(app_data: &Path) -> PathBuf {
     app_data.join("diagnostics/webview-surface.json")
+}
+
+fn shell_runtime_diagnostic_path(app_data: &Path) -> PathBuf {
+    app_data.join("diagnostics/shell-runtime.json")
+}
+
+fn shell_runtime_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn read_shell_runtime(app_data: &Path) -> Option<ShellRuntimeDiagnostic> {
+    std::fs::read_to_string(shell_runtime_diagnostic_path(app_data))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+/// 清除上一进程的壳层事件，避免历史成功记录掩盖当前黑屏。
+pub fn begin_shell_runtime_session(app_handle: &AppHandle) -> Result<(), String> {
+    let app_data = crate::config::get_base_dir(app_handle);
+    let path = shell_runtime_diagnostic_path(&app_data);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("SHELL_DIAGNOSTIC_DIR: {error}"))?;
+    }
+    for stale_path in [
+        webview_diagnostic_path(&app_data),
+        surface_diagnostic_path(&app_data),
+    ] {
+        match std::fs::remove_file(stale_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("SHELL_DIAGNOSTIC_CLEAR: {error}")),
+        }
+    }
+    let report = ShellRuntimeDiagnostic {
+        pid: std::process::id(),
+        events: Vec::new(),
+    };
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&report)
+            .map_err(|error| format!("SHELL_DIAGNOSTIC_SERIALIZE: {error}"))?,
+    )
+    .map_err(|error| format!("SHELL_DIAGNOSTIC_WRITE: {error}"))
+}
+
+/// 追加一个由顶层 WebView 文档直接上报的壳层加载事件。
+pub fn record_shell_runtime_event(
+    app_handle: &AppHandle,
+    stage: &str,
+    href: &str,
+    resource: &str,
+    message: &str,
+    root_child_count: usize,
+) -> Result<ShellRuntimeDiagnostic, String> {
+    const STAGES: [&str; 7] = [
+        "document-created",
+        "dom-content-loaded",
+        "resource-error",
+        "script-error",
+        "unhandled-rejection",
+        "react-mounted",
+        "react-missing",
+    ];
+    if !STAGES.contains(&stage) {
+        return Err(format!("SHELL_DIAGNOSTIC_INVALID_STAGE: {stage}"));
+    }
+    let _guard = shell_runtime_lock()
+        .lock()
+        .map_err(|_| "SHELL_DIAGNOSTIC_LOCK".to_string())?;
+    let app_data = crate::config::get_base_dir(app_handle);
+    let path = shell_runtime_diagnostic_path(&app_data);
+    let mut report = read_shell_runtime(&app_data).unwrap_or(ShellRuntimeDiagnostic {
+        pid: std::process::id(),
+        events: Vec::new(),
+    });
+    if report.pid != std::process::id() {
+        report = ShellRuntimeDiagnostic {
+            pid: std::process::id(),
+            events: Vec::new(),
+        };
+    }
+    report.events.push(ShellRuntimeEvent {
+        stage: stage.to_string(),
+        href: href.chars().take(240).collect(),
+        resource: resource.chars().take(240).collect(),
+        message: message.chars().take(400).collect(),
+        root_child_count,
+        observed_at_ms: now_ms(),
+    });
+    if report.events.len() > 64 {
+        report.events.drain(..report.events.len() - 64);
+    }
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&report)
+            .map_err(|error| format!("SHELL_DIAGNOSTIC_SERIALIZE: {error}"))?,
+    )
+    .map_err(|error| format!("SHELL_DIAGNOSTIC_WRITE: {error}"))?;
+    Ok(report)
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+/// 检查当前 EXE 内嵌的入口 HTML 及其直接脚本、样式资源。
+pub fn shell_asset_diagnostic(app_handle: &AppHandle) -> ShellAssetDiagnostic {
+    let resolver = app_handle.asset_resolver();
+    let mut embedded_paths = resolver
+        .iter()
+        .map(|(path, _)| path.into_owned())
+        .collect::<Vec<_>>();
+    embedded_paths.sort();
+    let embedded_asset_count = embedded_paths.len();
+    let index = resolver.get("index.html".to_string());
+    let mut paths = vec!["index.html".to_string()];
+    if let Some(index) = &index {
+        let html = String::from_utf8_lossy(index.bytes());
+        let references = regex::Regex::new(r#"(?:src|href)=\"(/[^\"]+)\""#)
+            .expect("static shell asset reference regex");
+        for capture in references.captures_iter(&html) {
+            let path = capture[1].trim_start_matches('/').to_string();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    let checks = paths
+        .into_iter()
+        .map(|path| {
+            let embedded_path = format!("/{path}");
+            let present = embedded_paths.contains(&embedded_path);
+            let asset = resolver.get(path.clone());
+            let fallback = asset
+                .as_ref()
+                .is_some_and(|asset| path != "index.html" && asset.mime_type() == "text/html");
+            ShellAssetCheck {
+                path,
+                present,
+                fallback,
+                mime_type: asset.as_ref().map(|asset| asset.mime_type().to_string()),
+                size: asset.as_ref().map(|asset| asset.bytes().len()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let state = if checks.iter().all(|check| check.present && !check.fallback) {
+        "ready"
+    } else {
+        "broken"
+    };
+    ShellAssetDiagnostic {
+        state: state.to_string(),
+        embedded_asset_count,
+        embedded_paths,
+        checks,
+        observed_at_ms: now_ms(),
+    }
+}
+
+/// 返回不依赖 React 或 DSH 的实时壳层状态。
+pub fn shell_status(app_handle: &AppHandle) -> ShellStatusDiagnostic {
+    ShellStatusDiagnostic {
+        assets: shell_asset_diagnostic(app_handle),
+        runtime: read_shell_runtime(&crate::config::get_base_dir(app_handle)),
+    }
 }
 
 fn read_surface_diagnostic(app_data: &Path) -> Option<SurfaceDiagnostic> {
@@ -297,6 +515,8 @@ pub fn snapshot_from_roots(
         plugin_compatibility,
         webview_route: read_webview_route(app_data),
         surface: read_surface_diagnostic(app_data),
+        shell_assets: None,
+        shell_runtime: read_shell_runtime(app_data),
     })
 }
 
@@ -320,6 +540,8 @@ pub fn snapshot_for_paths(
         )?,
         webview_route: None,
         surface: None,
+        shell_assets: None,
+        shell_runtime: None,
     })
 }
 
@@ -346,6 +568,8 @@ pub fn active_snapshot(app_handle: &AppHandle) -> Result<DiagnosticsSnapshot, St
         )?,
         webview_route: read_webview_route(&crate::config::get_base_dir(app_handle)),
         surface: read_surface_diagnostic(&crate::config::get_base_dir(app_handle)),
+        shell_assets: Some(shell_asset_diagnostic(app_handle)),
+        shell_runtime: read_shell_runtime(&crate::config::get_base_dir(app_handle)),
     })
 }
 

@@ -10,7 +10,7 @@ pub use core::{
     fetch_dsh_pkg_tags, fetch_latest_dsh_pkg_info, fetch_node_sha256, parse_version_from_tag,
     record_matches_latest_release, resolve_update, verify_sha256, LatestDshPkg, UpdateCheck,
 };
-// 供核心面板切换版本时使用（跨模块内部接口，不进公共 API）
+// 供内核面板切换版本时使用（跨模块内部接口，不进公共 API）
 pub(crate) use core::{remove_dir_with_retry, rename_with_retry};
 #[cfg(windows)]
 pub use installable::Git;

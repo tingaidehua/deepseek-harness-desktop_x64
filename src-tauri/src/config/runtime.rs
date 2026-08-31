@@ -262,12 +262,12 @@ pub fn get_legacy_dsh_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> Pat
     get_dependencies_path(app_handle).join(DSH_CORE_DIR)
 }
 
-/// Desktop 管理的不可变 Harness 核心槽位根目录。
+/// Desktop 管理的不可变 Harness 内核槽位根目录。
 pub fn get_dsh_core_slots_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_dependencies_path(app_handle).join(DSH_CORE_SLOTS_DIR)
 }
 
-/// 指定发行 tag 的不可变核心槽位。
+/// 指定发行 tag 的不可变内核槽位。
 pub fn get_dsh_slot_install_path<R: Runtime>(app_handle: &AppHandle<R>, tag: &str) -> PathBuf {
     get_dsh_core_slots_path(app_handle).join(tag)
 }
@@ -289,8 +289,72 @@ pub fn set_active_dsh_slot<R: Runtime>(app_handle: &AppHandle<R>, tag: &str) -> 
     let dependencies = get_dependencies_path(app_handle);
     fs::create_dir_all(&dependencies)
         .map_err(|error| format!("CORE_POINTER_DIR_CREATE: {error}"))?;
-    fs::write(dependencies.join(DSH_ACTIVE_CORE_FILE), format!("{tag}\n"))
-        .map_err(|error| format!("CORE_POINTER_WRITE: {error}"))
+    write_active_dsh_slot(&dependencies.join(DSH_ACTIVE_CORE_FILE), tag)
+}
+
+/// 经同目录临时文件原子替换活动内核指针，启动线程只能观察到旧值或新值。
+fn write_active_dsh_slot(path: &Path, tag: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let temporary = path.with_extension(format!(
+        "active-core.{}.{}.tmp",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(format!("{tag}\n").as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        replace_active_dsh_slot(&temporary, path)
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("CORE_POINTER_WRITE: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_active_dsh_slot(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, path)
+}
+
+#[cfg(windows)]
+fn replace_active_dsh_slot(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    for attempt in 0..50 {
+        let moved = unsafe {
+            MoveFileExW(
+                temporary_wide.as_ptr(),
+                path_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved != 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if attempt == 49 || error.kind() != std::io::ErrorKind::PermissionDenied {
+            return Err(error);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    unreachable!("bounded replacement loop always returns")
 }
 
 /// 恢复或清除活动槽位指针，供设置写入失败时回滚。
@@ -512,7 +576,7 @@ fn user_home_dir() -> Option<PathBuf> {
 /// - 否则 release 构建默认 `~/.dsh`（Windows `%USERPROFILE%\.dsh`，Unix
 ///   `$HOME/.dsh`，与官方 node 安装共用同一份数据）；
 /// - debug 构建默认 `~/.dsh.dev`：开发版与生产版同时运行时，会话、档案、
-///   插件与主题等数据互不干扰，也不会互相污染对方的会话（核心目录
+///   插件与主题等数据互不干扰，也不会互相污染对方的会话（内核目录
 ///   `dependencies/` 仍共用同一份安装）。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
     if let Some(home) = std::env::var_os("DSH_HOME") {
@@ -665,6 +729,8 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     /// 为文件布局测试生成互不冲突的临时目录。
     fn unique_runtime_test_dir(name: &str) -> PathBuf {
@@ -675,6 +741,40 @@ mod tests {
             .expect("system time after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("dsh-runtime-{name}-{}-{nonce}", std::process::id()))
+    }
+
+    /// 并发读取活动内核指针时只能看到完整旧值或完整新值。
+    #[test]
+    fn active_core_pointer_replacement_is_atomic_for_readers() {
+        let root = unique_runtime_test_dir("active-core-atomic");
+        fs::create_dir_all(&root).expect("create pointer root");
+        let path = root.join(DSH_ACTIVE_CORE_FILE);
+        write_active_dsh_slot(&path, "dsh-0.1.1-rc.2-local").expect("write initial pointer");
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let reader_path = path.clone();
+        let reader_finished = Arc::clone(&finished);
+        let reader = std::thread::spawn(move || {
+            while !reader_finished.load(Ordering::Acquire) {
+                let value = fs::read_to_string(&reader_path).expect("pointer must remain present");
+                assert!(matches!(
+                    value.trim(),
+                    "dsh-0.1.1-rc.2-local" | "dsh-0.1.2-alpha.1-local"
+                ));
+            }
+        });
+
+        for index in 0..200 {
+            let tag = if index % 2 == 0 {
+                "dsh-0.1.2-alpha.1-local"
+            } else {
+                "dsh-0.1.1-rc.2-local"
+            };
+            write_active_dsh_slot(&path, tag).expect("replace pointer");
+        }
+        finished.store(true, Ordering::Release);
+        reader.join().expect("reader completed");
+        let _ = fs::remove_dir_all(root);
     }
 
     /// 完整 Git 安装版把 HTTPS helper 直接放在 exec path 时仍应识别。

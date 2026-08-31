@@ -101,7 +101,7 @@ fn linux_prefs(family: &str) -> &'static [&'static str] {
 /// 选择规则分两层：先按平台偏好扩展名排序，同扩展名下再按架构匹配度挑选。
 /// - Windows 优先 NSIS setup.exe（其次 msi）：NSIS 不会像 MSI 那样由
 ///   RestartManager 强杀旧进程并在安装完成后自动重开应用，避免应用在旧进程
-///   被强杀、运行文件瞬时缺失的窗口被自动拉起，从而误触发核心重下载。
+///   被强杀、运行文件瞬时缺失的窗口被自动拉起，从而误触发内核重下载。
 /// - macOS 选 dmg，并按架构区分，避免 Intel 芯片 Mac 下载到 M 芯片
 ///   （aarch64）的安装包（issue #33）。
 /// - Linux 优先与发行版包管理一致的原生安装包（**deb 系优先 `.deb`、rpm 系优先

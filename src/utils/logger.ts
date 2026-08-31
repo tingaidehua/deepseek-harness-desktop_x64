@@ -51,6 +51,20 @@ function resolveLevel(): LogLevel {
 }
 
 const currentLevel: LogLevel = resolveLevel()
+const FLUSH_INTERVAL_MS = 200
+const MAX_BATCH_ENTRIES = 128
+const MAX_QUEUED_BYTES = 256 * 1024
+
+interface PendingLogEntry {
+  level: LogLevel
+  target: string
+  message: string
+  bytes: number
+}
+
+let pendingEntries: PendingLogEntry[] = []
+let pendingBytes = 0
+let flushTimer: ReturnType<typeof setTimeout> | undefined
 
 function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel]
@@ -77,12 +91,36 @@ function forwardToRust(level: LogLevel, tag: string, args: unknown[]) {
   if (level === 'off')
     return
   try {
-    const message = serializeMessage(args)
-    void invoke('log_frontend', { level, target: tag, message }).catch(() => {})
+    const message = serializeMessage(args).slice(-16 * 1024)
+    const bytes = new TextEncoder().encode(message).byteLength
+    while (pendingEntries.length > 0 && pendingBytes + bytes > MAX_QUEUED_BYTES) {
+      const removed = pendingEntries.shift()
+      if (removed)
+        pendingBytes -= removed.bytes
+    }
+    pendingEntries.push({ level, target: tag.slice(0, 80), message, bytes })
+    pendingBytes += bytes
+    if (pendingEntries.length >= MAX_BATCH_ENTRIES || level === 'error')
+      flushToRust()
+    else if (flushTimer === undefined)
+      flushTimer = setTimeout(flushToRust, FLUSH_INTERVAL_MS)
   }
   catch {
     // Tauri 未就绪时忽略
   }
+}
+
+function flushToRust() {
+  if (flushTimer !== undefined) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  if (pendingEntries.length === 0)
+    return
+  const entries = pendingEntries.map(({ level, target, message }) => ({ level, target, message }))
+  pendingEntries = []
+  pendingBytes = 0
+  void invoke('log_frontend_batch', { entries }).catch(() => {})
 }
 
 // ---------------------------------------------------------------------------

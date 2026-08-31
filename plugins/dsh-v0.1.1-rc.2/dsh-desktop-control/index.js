@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-export const inject = ['tools']
+export const inject = ['tools', 'webServer']
 
 const ENDPOINT_FILE = process.env.DSH_DESKTOP_CONTROL_ENDPOINT_FILE
 const TRACE_FILE = process.env.DSH_DESKTOP_CONTROL_TRACE_FILE
@@ -25,6 +25,94 @@ const READ_ONLY_OPERATIONS = [
   'logs.bundle',
   'trace.read',
 ]
+const CLIENT_API_PREFIX = '/api/dsh-desktop-control'
+const CLIENT_ACTIONS = new Set([
+  'session.click-new',
+  'session.start-unscoped',
+  'session.start-current-workspace',
+  'session.connect-current-workspace',
+  'session.open-current-workspace-blank',
+  'session.open-nonblank',
+  'session.click-archive',
+])
+const clientCommands = []
+let latestClientReport = { phase: 'waiting-for-client' }
+
+function sendJson(response, status, value) {
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  response.end(JSON.stringify(value))
+}
+
+function readJson(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    request.on('data', (chunk) => {
+      size += chunk.length
+      if (size > 64 * 1024)
+        reject(new Error('CLIENT_CONTROL_REQUEST_TOO_LARGE'))
+      else chunks.push(chunk)
+    })
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'))
+      }
+      catch (error) {
+        reject(error)
+      }
+    })
+    request.on('error', reject)
+  })
+}
+
+function isLoopback(request) {
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket?.remoteAddress ?? '')
+}
+
+function clientRoute(path, handler) {
+  return {
+    kind: 'exact',
+    path: `${CLIENT_API_PREFIX}${path}`,
+    async handler(request, response) {
+      try {
+        await handler(request, response)
+      }
+      catch (error) {
+        sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }
+}
+
+function registerClientRoutes(ctx) {
+  const routes = [
+    clientRoute('/state', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { error: 'GET required' })
+      sendJson(response, 200, { report: latestClientReport, queued: clientCommands.length })
+    }),
+    clientRoute('/next', async (request, response) => {
+      if (request.method !== 'GET') return sendJson(response, 405, { error: 'GET required' })
+      sendJson(response, 200, { command: clientCommands.shift() ?? null })
+    }),
+    clientRoute('/action', async (request, response) => {
+      if (request.method !== 'POST') return sendJson(response, 405, { error: 'POST required' })
+      if (!isLoopback(request)) return sendJson(response, 403, { error: 'loopback required' })
+      const body = await readJson(request)
+      if (!CLIENT_ACTIONS.has(body.action) || typeof body.id !== 'string' || body.id.length === 0)
+        return sendJson(response, 400, { error: 'unsupported client action' })
+      clientCommands.push({ id: body.id, action: body.action })
+      sendJson(response, 202, { accepted: true, id: body.id })
+    }),
+    clientRoute('/report', async (request, response) => {
+      if (request.method !== 'POST') return sendJson(response, 405, { error: 'POST required' })
+      if (!isLoopback(request)) return sendJson(response, 403, { error: 'loopback required' })
+      latestClientReport = await readJson(request)
+      sendJson(response, 200, { accepted: true })
+    }),
+  ]
+  const disposers = routes.map(route => ctx.webServer.register(route))
+  return () => disposers.forEach(dispose => dispose())
+}
 
 function textOutput() {
   return {
@@ -183,6 +271,7 @@ async function recoveryUrlFrom(ctx) {
 
 export async function apply(ctx) {
   await publishRecoveryRecord(ctx)
+  ctx.effect(() => registerClientRoutes(ctx), 'dsh-desktop-control: client test routes')
   if (typeof ctx.inject === 'function') {
     ctx.inject(['connection'], (connectionCtx) => {
       void publishRecoveryRecord(connectionCtx).catch((error) => {

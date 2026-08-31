@@ -25,7 +25,7 @@ pub struct PreinstallPluginInfo {
     pub spec: String,
     /// 内置插件：条目来自 `resources/internal-plugins.json`，产物由构建期
     /// `scripts/prebuild.ts` 从上游仓库拉取到 `resources/internal-plugins/<id>/`
-    /// 随安装包分发。启动时先检查核心兼容性；兼容的插件固化到 profile 内容
+    /// 随安装包分发。启动时先检查内核兼容性；兼容的插件固化到 profile 内容
     /// 槽位并以相对 `link:` 安装，不兼容的插件停止安装并返回诊断错误。
     #[serde(default)]
     pub internal: bool,
@@ -139,7 +139,7 @@ pub(crate) fn bundled_plugin_dir(app_handle: &AppHandle, id: &str) -> Option<Pat
     source.join("package.json").exists().then_some(source)
 }
 
-/// 定位与当前核心协议世代匹配的社区预设离线产物。
+/// 定位与当前内核协议世代匹配的社区预设离线产物。
 pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Option<PathBuf> {
     let artifact_set = crate::service::core_compatibility::CoreCompatibility::active(app_handle)
         .ok()?
@@ -159,7 +159,7 @@ pub(crate) fn preset_plugin_artifact_dir(app_handle: &AppHandle, id: &str) -> Op
     source.join("package.json").exists().then_some(source)
 }
 
-/// 新世代核心已经原生提供 Windows 进程检查器，不应再加载覆盖核心实现的旧插件。
+/// 新世代内核已经原生提供 Windows 进程检查器，不应再加载覆盖内核实现的旧插件。
 pub(crate) fn provided_by_active_core(app_handle: &AppHandle, id: &str) -> bool {
     id == "dsh-win-terminal-inspector"
         && crate::service::core_compatibility::CoreCompatibility::active(app_handle)
@@ -394,7 +394,7 @@ fn parse_plugins(json: &str, internal: bool) -> Result<Vec<PreinstallPluginInfo>
 
 /// 读取单个插件清单；资源缺失/损坏时记录错误并返回空清单。
 ///
-/// 插件元数据不是桌面壳启动的硬依赖；降级为空列表可让核心服务继续启动，同时用
+/// 插件元数据不是桌面壳启动的硬依赖；降级为空列表可让内核服务继续启动，同时用
 /// 明确日志保留发布资源缺失或损坏的诊断信息，避免清单故障导致应用整体不可用。
 fn load_manifest(
     app_handle: &AppHandle,

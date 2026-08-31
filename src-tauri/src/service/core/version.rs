@@ -1,8 +1,8 @@
-//! 预打包核心的多版本管理：列出、切换、下载历史版本、卸载。
+//! 预打包内核的多版本管理：列出、切换、下载历史版本、卸载。
 //!
 //! 磁盘布局：每个发行版位于 `dependencies/cores/<tag>` 不可变槽位，活动 tag
 //! 只保存在设置中。旧版 `dependencies/dsh` 与 `dependencies/<tag>` 仅用于升级
-//! 发现，不再参与目录互换。本地核心探测见 [`super::local`]。
+//! 发现，不再参与目录互换。本地内核探测见 [`super::local`]。
 
 use crate::config;
 use crate::service::{download, fs_guard, workflow};
@@ -76,7 +76,7 @@ fn read_manifest_dsh_version(dir: &Path) -> Option<String> {
     semver::Version::parse(&version).ok().map(|_| version)
 }
 
-/// 核心列表：本地核心 + deepseek-harness-pkg 各发布版本（按版本去重）。
+/// 内核列表：本地内核 + deepseek-harness-pkg 各发布版本（按版本去重）。
 ///
 /// 版本行数据源为 GitHub tags（`fetch_dsh_pkg_tags`，最新在前）。pkg 仓库会对同一
 /// 版本打多个 tag（含测试打包），这里按版本去重——同一版本只保留**最后一个** tag。
@@ -117,7 +117,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     );
     let active_dir = config::get_dsh_install_path(app_handle);
     let active_present = config::get_dsh_binary_path(app_handle).exists();
-    // 激活核心按「版本」而非 tag 匹配版本行：pkg 仓库会对同一版本重打包/打
+    // 激活内核按「版本」而非 tag 匹配版本行：pkg 仓库会对同一版本重打包/打
     // 测试 tag，版本行去重后保留的 tag 未必等于本机安装时的记录 tag。按 tag
     // 精确匹配会让激活版本行误标「未下载」并在列表底部多出一条重复激活行。
     let active_version = if source == CoreSource::App {
@@ -126,7 +126,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         None
     };
     // 已安装的预打包版本号（无论当前以哪种来源运行都存在）：用于保证预打包行
-    // 始终如实呈现为"已安装"，即便本次以本地核心运行，也不会把它标成"未下载"。
+    // 始终如实呈现为"已安装"，即便本次以本地内核运行，也不会把它标成"未下载"。
     let installed_version = config::get_dsh_version(app_handle);
 
     // 版本行：GitHub tags（最新在前）→ 按版本去重，同版本只保留最后一个 tag
@@ -156,12 +156,12 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
         }
     }
 
-    // 激活行就地标记：按版本匹配激活核心（不置顶，作为普通版本行标 active）
+    // 激活行就地标记：按版本匹配激活内核（不置顶，作为普通版本行标 active）
     let mut active_rendered = false;
     for (version, tag) in &version_tags {
         let is_active = active_version.as_deref() == Some(version.as_str());
-        // 已安装的预打包核心：即使本次以本地核心运行（source=Local）也要如实标为
-        // "已安装"，避免本地核心出现后预打包被当作未下载/消失（issue #54）。
+        // 已安装的预打包内核：即使本次以本地内核运行（source=Local）也要如实标为
+        // "已安装"，避免本地内核出现后预打包被当作未下载/消失（issue #54）。
         let is_installed = installed_version.as_deref() == Some(version.as_str());
         if is_active || is_installed {
             active_rendered = true;
@@ -195,8 +195,8 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     }
 
     // 已安装的预打包版本未出现在版本列表（离线/限流/tag 被移除/旧版无 tag 记录）：
-    // 纳入版本行之后，保持列表不置顶；无论当前是否以本地核心运行都要列出，
-    // 避免"本地核心出现后预打包消失"。
+    // 纳入版本行之后，保持列表不置顶；无论当前是否以本地内核运行都要列出，
+    // 避免"本地内核出现后预打包消失"。
     if !active_rendered && active_present {
         rows.push(HarnessCore {
             id: active_tag
@@ -292,7 +292,7 @@ pub async fn list(app_handle: &AppHandle) -> Vec<HarnessCore> {
     rows
 }
 
-/// 切换活动核心（只持久化选择；服务重启由前端负责）。
+/// 切换活动内核（只持久化选择；服务重启由前端负责）。
 ///
 /// `id` 取值：`local` | `app`（无 tag 记录的旧激活行）| `app-<tag>`。
 pub async fn set_active(app_handle: &AppHandle, id: &str) -> Result<HarnessCore, String> {
@@ -411,7 +411,7 @@ async fn rollback_active_switch(
 
 /// 切换到指定 tag 的预打包版本（已下载的不可变槽位）。
 ///
-/// 切换不移动或删除核心目录；目标入口校验通过后一次写入活动 tag。运行中的服务
+/// 切换不移动或删除内核目录；目标入口校验通过后一次写入活动 tag。运行中的服务
 /// 仍持有原槽位，直到调用方显式重启，因此写设置失败也不会破坏当前进程。
 async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), String> {
     fs_guard::validate_id(tag)?;
@@ -463,7 +463,7 @@ async fn switch_app_version(app_handle: &AppHandle, tag: &str) -> Result<(), Str
     Ok(())
 }
 
-/// 下载指定 tag 的预打包核心到不可变槽位 `dependencies/cores/<tag>`（不激活，切换由
+/// 下载指定 tag 的预打包内核到不可变槽位 `dependencies/cores/<tag>`（不激活，切换由
 /// `set_active` 完成）。幂等：已下载时直接返回该版本行。
 pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<HarnessCore, String> {
     // 路径安全：tag 直接进入 `dependencies/cores/<tag>`，需挡 `..`/分隔符
@@ -488,7 +488,7 @@ pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<Harne
         .get_webview_window("main")
         .ok_or("WINDOW_NOT_FOUND: main window missing")?;
     let mut tracker = download::ProgressTracker::new(&window, 2);
-    tracker.start_phase("download", &format!("正在下载核心版本 {tag}"));
+    tracker.start_phase("download", &format!("正在下载内核版本 {tag}"));
     let urls = vec![
         info.asset_url.clone(),
         config::mirror_download_url(&info.asset_url),
@@ -504,7 +504,7 @@ pub async fn download_version(app_handle: &AppHandle, tag: &str) -> Result<Harne
         .next()
         .unwrap_or(&info.asset_url)
         .to_string();
-    tracker.start_phase("extract", &format!("正在解压核心版本 {tag}"));
+    tracker.start_phase("extract", &format!("正在解压内核版本 {tag}"));
     download::ensure_extract(&tracker, name, buffer, dest.clone())
         .await
         .map_err(|e| format!("CORE_EXTRACT_FAILED: {e}"))?;
@@ -549,7 +549,7 @@ pub async fn remove_version(app_handle: &AppHandle, id: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// 解析激活预打包核心的版本号：优先记录 tag（`dsh-<version>-<commit>`），
+/// 解析激活预打包内核的版本号：优先记录 tag（`dsh-<version>-<commit>`），
 /// 解析不出（无 tag 记录/格式不符）时用安装目录清单版本兜底。
 fn active_app_tag(active_slot: Option<String>, recorded_release: Option<String>) -> Option<String> {
     active_slot.or(recorded_release)
@@ -569,7 +569,7 @@ fn active_app_version(
         .or(manifest_version)
 }
 
-/// 构造某个已下载 tag 的核心行（下载完成/已存在时返回）。
+/// 构造某个已下载 tag 的内核行（下载完成/已存在时返回）。
 fn row_for_tag(app_handle: &AppHandle, tag: &str, dir: &Path) -> HarnessCore {
     let active = active_app_tag(
         config::get_active_dsh_slot(app_handle),

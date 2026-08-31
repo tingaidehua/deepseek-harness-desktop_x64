@@ -1,5 +1,5 @@
 {
-  "protocol": "desktop-feature-test-contract-v1",
+  "protocol": "desktop-feature-test-contract-v2",
   "features": [
     {
       "id": "installation-and-lifecycle",
@@ -19,7 +19,25 @@
         "runtime.info",
         "instance.info",
         "logs.bundle",
-        "desktop.exit"
+        "desktop.exit",
+        "desktop.shutdown"
+      ],
+      "behaviorAssertions": [
+        {
+          "id": "shell-react-mounts",
+          "source": "scripts/verify-release-shell.mjs",
+          "contains": "event.stage === 'react-mounted'"
+        },
+        {
+          "id": "release-cold-start-reaches-compatible-core",
+          "source": "scripts/verify-release-shell.mjs",
+          "contains": "snapshot.coreCompatibility.coreVersion"
+        },
+        {
+          "id": "live-dsh-loader-ready",
+          "source": "scripts/dsh-surface-matrix.mjs",
+          "contains": "web.loader-live"
+        }
       ]
     },
     {
@@ -41,7 +59,19 @@
         "detect_plugin_recovery",
         "recover_plugin"
       ],
-      "controlOperations": ["diagnostics.snapshot"]
+      "controlOperations": ["diagnostics.snapshot"],
+      "behaviorAssertions": [
+        {
+          "id": "bundled-plugin-artifacts",
+          "source": "scripts/verify-bundled-plugins.mjs",
+          "contains": "Desktop 插件制品完整"
+        },
+        {
+          "id": "plugin-settings-surface",
+          "source": "scripts/dsh-surface-matrix.mjs",
+          "contains": "settings.plugins.shell-card"
+        }
+      ]
     },
     {
       "id": "profiles-and-cores",
@@ -57,28 +87,65 @@
         "remove_core",
         "update_local_core"
       ],
-      "controlOperations": ["profile.list", "core.list", "diagnostics.snapshot"]
+      "controlOperations": ["profile.list", "profile.activate", "core.list", "core.activate", "diagnostics.snapshot"],
+      "behaviorAssertions": [
+        {
+          "id": "core-forward-reverse-roundtrip",
+          "source": "scripts/dsh-core-roundtrip.mjs",
+          "contains": "desktop-core-roundtrip-v1"
+        },
+        {
+          "id": "new-session-state-transition",
+          "source": "scripts/dsh-client-action.mjs",
+          "contains": "dsh-desktop-client-action-v1"
+        },
+        {
+          "id": "archive-and-rollback-state-transition",
+          "source": "scripts/dsh-client-action.mjs",
+          "contains": "session.click-archive"
+        }
+      ]
     },
     {
       "id": "machine-diagnostics",
       "interface": "tauri-ipc-control-and-persisted-trace",
       "commands": [
         "get_diagnostics_snapshot",
+        "report_shell_diagnostics",
         "report_frame_readiness",
         "report_surface_diagnostics",
         "get_runtime_info",
         "read_service_logs",
         "read_run_logs",
         "clear_service_logs",
-        "log_frontend"
+        "log_frontend",
+        "log_frontend_batch"
       ],
       "controlOperations": [
         "control.catalog",
         "diagnostics.snapshot",
+        "shell.status",
         "runtime.info",
         "logs.bundle",
         "trace.read",
         "stress.snapshot"
+      ],
+      "behaviorAssertions": [
+        {
+          "id": "diagnostic-secrets-redacted",
+          "source": "src-tauri/src/bridge/system_os.rs",
+          "contains": "diagnostic_bundle_redacts_paths_and_secrets"
+        },
+        {
+          "id": "diagnostic-tail-bounded",
+          "source": "src-tauri/src/bridge/system_os.rs",
+          "contains": "diagnostic_tail_is_bounded_by_lines"
+        },
+        {
+          "id": "control-stress-reports-latency",
+          "source": "src-tauri/src/service/control.rs",
+          "contains": "latencyMicros"
+        }
       ]
     },
     {
@@ -101,7 +168,24 @@
         "read_clipboard_image",
         "show_native_notification"
       ],
-      "controlOperations": ["runtime.info"]
+      "controlOperations": ["runtime.info"],
+      "behaviorAssertions": [
+        {
+          "id": "settings-page-opens",
+          "source": "scripts/dsh-surface-matrix.mjs",
+          "contains": "settings.open"
+        },
+        {
+          "id": "zoom-command-mapping",
+          "source": "test/zoom.test.ts",
+          "contains": "maps Ctrl and Command zoom shortcuts"
+        },
+        {
+          "id": "native-clipboard-errors-propagate",
+          "source": "test/clipboard.test.ts",
+          "contains": "propagates native clipboard failures"
+        }
+      ]
     },
     {
       "id": "desktop-update-and-links",
@@ -113,7 +197,19 @@
         "get_desktop_about",
         "open_external_url"
       ],
-      "controlOperations": ["runtime.info", "logs.bundle"]
+      "controlOperations": ["runtime.info", "logs.bundle"],
+      "behaviorAssertions": [
+        {
+          "id": "release-ordering",
+          "source": "src-tauri/src/service/update/version.rs",
+          "contains": "is_newer_compares_semver"
+        },
+        {
+          "id": "installer-file-validation",
+          "source": "src-tauri/src/service/update/install.rs",
+          "contains": "installer"
+        }
+      ]
     }
   ]
 }

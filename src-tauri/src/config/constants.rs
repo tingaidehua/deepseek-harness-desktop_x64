@@ -56,15 +56,15 @@ pub const DSH_DEV_PORT: u16 = 3081;
 /// 与官方 node 安装保持一致）。
 pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 /// 开发（debug）构建的用户数据目录名（`~/.dsh.dev`）：与生产数据目录隔离。
-/// 核心（node/`dependencies/dsh`/`dependencies/pnpm`）仍共用同一份安装，但
+/// 内核（node/`dependencies/dsh`/`dependencies/pnpm`）仍共用同一份安装，但
 /// 会话、档案、插件与主题等数据各自独立——`pnpm tauri dev` 与已安装桌面端
 /// 同时运行时互不干扰，也不会互相污染对方的会话数据。
 pub const DSH_HOME_DEV_DIR_NAME: &str = ".dsh.dev";
 
-/// 旧版固定核心目录。新安装使用 `dependencies/cores/<tag>` 不可变槽位；
+/// 旧版固定内核目录。新安装使用 `dependencies/cores/<tag>` 不可变槽位；
 /// 此目录只作为升级迁移前的可用回退，不再参与版本互换。
 pub const DSH_CORE_DIR: &str = "dsh";
-/// Desktop 管理的不可变 Harness 核心槽位根目录。
+/// Desktop 管理的不可变 Harness 内核槽位根目录。
 pub const DSH_CORE_SLOTS_DIR: &str = "cores";
 /// 当前活动不可变槽位的 tag 指针。文件缺失或内容无效时回退旧版固定目录。
 pub const DSH_ACTIVE_CORE_FILE: &str = "active-core";

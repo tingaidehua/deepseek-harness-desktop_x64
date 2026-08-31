@@ -604,7 +604,7 @@ fn is_dangling_symlink(path: &Path) -> bool {
 /// 判断路径是否为本应用生成的 shim（内容含生成标记）。
 ///
 /// 用于在本地 dsh 探测中区分"本应用 shim"与"用户自行放置的同名文件"：
-/// 前者应被排除（它转发到捆绑 dsh，不构成用户本地核心），后者应被识别。
+/// 前者应被排除（它转发到捆绑 dsh，不构成用户本地内核），后者应被识别。
 pub fn is_generated_shim(path: &Path) -> bool {
     match std::fs::read_to_string(path) {
         Ok(content) => content.contains(GENERATED_MARKER),

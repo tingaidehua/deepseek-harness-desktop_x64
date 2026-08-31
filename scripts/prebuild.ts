@@ -39,13 +39,15 @@ interface InternalPlugin {
 
 interface CoreTarget {
   coreVersion: string
-  webLaunchProtocol: string
-  clientAbi: string
-  slotProtocol: string
-  sessionFormat: string
   pluginArtifactSet: string
-  supportsNoOpen: boolean
-  providesWinTerminalInspector: boolean
+}
+
+interface PluginSet {
+  coreVersion: string
+  artifactSet: string
+  internalPlugins: InternalPlugin[]
+  presetPlugins: InternalPlugin[]
+  adapter: string
 }
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
@@ -57,6 +59,13 @@ const PRESET_BUNDLE_ROOT = join(REPO_ROOT, 'src-tauri', 'resources', 'preset-plu
 const GIT_URL_RE = /^github:([^#/]+\/[^#/]+)(?:#.*)?$/
 const LOCAL_SOURCE_RE = /^local:(.+)$/
 const CORE_TARGETS = JSON.parse(readFileSync(CORE_COMPATIBILITY_FILE, 'utf8')) as CoreTarget[]
+const PLUGIN_SETS = CORE_TARGETS.map((target) => {
+  const directory = join(REPO_ROOT, 'plugins', target.pluginArtifactSet)
+  const set = JSON.parse(readFileSync(join(directory, 'plugin-set.json'), 'utf8')) as PluginSet
+  if (set.coreVersion !== target.coreVersion || set.artifactSet !== target.pluginArtifactSet)
+    die(`${directory}: plugin set identity does not match core compatibility record`)
+  return { ...set, directory }
+})
 
 function die(message: string): never {
   console.error(`[prebuild] ${message}`)
@@ -64,12 +73,17 @@ function die(message: string): never {
 }
 
 /** 同步执行命令，非零退出码即终止构建（内置插件缺失是发布缺陷，必须响亮失败）。 */
-function run(program: string, args: readonly string[], cwd: string): void {
+function run(
+  program: string,
+  args: readonly string[],
+  cwd: string,
+  shell = process.platform === 'win32',
+): void {
   console.log(`[prebuild] $ ${program} ${args.join(' ')}`)
   const result = spawnSync(program, [...args], {
     cwd,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell,
   })
   if (result.error !== undefined) {
     die(`${program} 启动失败: ${result.error.message}`)
@@ -149,79 +163,13 @@ function collectBundle(preset: InternalPlugin, clone: string, artifactSet: strin
   return dest
 }
 
-/** Adapt the published RC client artifact to alpha.1's public client-store split. */
-function adaptSplitClientV1(dest: string): void {
-  const manifestPath = join(dest, 'package.json')
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-    dependencies?: Record<string, string>
-    peerDependencies?: Record<string, string>
-    dsh?: { client?: { inject?: string[] } }
-  }
-  const inject = manifest.dsh?.client?.inject
-  if (inject !== undefined) {
-    manifest.dsh!.client!.inject = [...new Set(inject.map(name =>
-      name === '@deepseek-ai/dsh-client-runtime'
-        ? '@deepseek-ai/dsh-client-store'
-        : name,
-    ))]
-  }
-  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) {
-    if (!name.startsWith('@deepseek-ai/dsh-'))
-      continue
-    delete manifest.dependencies![name]
-    manifest.peerDependencies ??= {}
-    manifest.peerDependencies[name] = range
-  }
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
-
-  function adaptJavaScriptTree(dir: string): void {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (entry.name !== 'node_modules')
-          adaptJavaScriptTree(path)
-        continue
-      }
-      if (!entry.isFile() || !entry.name.endsWith('.js'))
-        continue
-      const source = readFileSync(path, 'utf8')
-      const adapted = source.replaceAll(
-        '@deepseek-ai/dsh-client-runtime/client',
-        '@deepseek-ai/dsh-client-store',
-      )
-      if (adapted !== source)
-        writeFileSync(path, `${adapted.trimEnd()}\n`)
-      if (adapted.includes('@deepseek-ai/dsh-client-runtime/client'))
-        die(`${path}: split-client-v1 artifact still requests dsh-client-runtime/client`)
-    }
-  }
-  adaptJavaScriptTree(dest)
-}
-
-/** Adapt direct RC slot registration to the alpha.1 injected-slot protocol. */
-function adaptInjectedSlotsV1(dest: string): void {
-  const manifest = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')) as { name?: string }
-  // alpha.1 的层级插槽要求贡献者通过 inject 等待父入口声明 children table。
-  // dsh-tauri-session 0.5.3 仍直接 register(settings.section)，Loader 会在父入口
-  // 尚未落账时拒绝整个插件图。适配固定发布制品，不修改官方核心或用户 profile。
-  if (manifest.name === 'dsh-tauri-session') {
-    const clientPath = join(dest, 'dist', 'client.js')
-    const source = readFileSync(clientPath, 'utf8')
-    const directRegistration = /([A-Za-z_$][\w$]*)\.effect\(\(\)=>\1\.slots\.register\((\{name:`settings\.section`,[\s\S]*?\},[A-Za-z_$][\w$]*)\),[A-Za-z_$][\w$]*\)/
-    const adapted = source.replace(
-      directRegistration,
-      '$1.slots.inject("settings.section",()=>$1.slots.register($2))',
-    )
-    if (adapted === source)
-      die(`${dest}: injected-slots-v1 dsh-tauri-session transform did not match`)
-    writeFileSync(clientPath, `${adapted.trimEnd()}\n`)
-  }
-}
-
-/** 构建单个 internal 插件：git 来源（克隆 → 装依赖 → 构建）或 npm 来源（拉产物）。 */
-function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
-  for (const target of CORE_TARGETS)
-    rmSync(join(root, target.pluginArtifactSet, preset.id), { recursive: true, force: true })
+/** 构建单个精确 DSH tag 的插件；版本差异只允许存在于该 tag 的插件目录。 */
+function buildPlugin(
+  preset: InternalPlugin,
+  target: PluginSet & { directory: string },
+  root = BUNDLE_ROOT,
+): void {
+  rmSync(join(root, target.artifactSet, preset.id), { recursive: true, force: true })
 
   const temp = mkdtempSync(join(tmpdir(), `dsh-internal-${preset.id}-`))
   let source: string
@@ -259,27 +207,20 @@ function buildPlugin(preset: InternalPlugin, root = BUNDLE_ROOT): void {
     source = fetchNpmPackage(preset, temp)
   }
 
-  for (const target of CORE_TARGETS) {
-    const dest = collectBundle(preset, source, target.pluginArtifactSet, root)
-    if (target.clientAbi === 'split-client-v1')
-      adaptSplitClientV1(dest)
-    if (target.slotProtocol === 'injected-slots-v1')
-      adaptInjectedSlotsV1(dest)
-    if (root === PRESET_BUNDLE_ROOT && preset.id === 'dsh-win-terminal-inspector') {
-      if (target.providesWinTerminalInspector) {
-        rmSync(dest, { recursive: true, force: true })
-      }
-      else {
-        const manifestPath = join(dest, 'package.json')
-        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
-        manifest.dsh = { bundle: { patch: './cordis.patch.yml' } }
-        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
-        writeFileSync(join(dest, 'cordis.patch.yml'), '- insert:\n    - id: win-terminal-inspector\n      name: dsh-win-terminal-inspector\n')
-      }
-    }
-  }
+  const dest = collectBundle(preset, source, target.artifactSet, root)
+  run(process.execPath, [resolve(target.directory, target.adapter), dest], REPO_ROOT, false)
   rmSync(temp, { recursive: true, force: true })
-  console.log(`[prebuild] ${preset.id}: ${CORE_TARGETS.length} 个精确核心版本产物已就绪`)
+  console.log(`[prebuild] ${target.coreVersion}/${preset.id}: 精确版本产物已就绪`)
+}
+
+/** 删除不再受支持的旧 DSH tag 制品目录，只保留兼容表声明的两个精确集合。 */
+function removeUnsupportedArtifactSets(root: string): void {
+  if (!existsSync(root)) return
+  const retained = new Set(PLUGIN_SETS.map(set => set.artifactSet))
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && !retained.has(entry.name))
+      rmSync(join(root, entry.name), { recursive: true, force: true })
+  }
 }
 
 function main(): void {
@@ -298,36 +239,30 @@ function main(): void {
   if (!existsSync(PRESET_PLUGINS_FILE)) {
     die(`未找到首次引导插件清单 ${PRESET_PLUGINS_FILE}`)
   }
-  const internal = JSON.parse(readFileSync(INTERNAL_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
-  const presets = JSON.parse(readFileSync(PRESET_PLUGINS_FILE, 'utf8')) as InternalPlugin[]
+  removeUnsupportedArtifactSets(BUNDLE_ROOT)
+  removeUnsupportedArtifactSets(PRESET_BUNDLE_ROOT)
   const requestedIds = new Set(
     (process.env.DSH_DESKTOP_BUNDLE_PLUGIN_IDS ?? '')
       .split(',')
       .map(id => id.trim())
       .filter(Boolean),
   )
-  const selectedInternal = requestedIds.size === 0
-    ? internal
-    : internal.filter(plugin => requestedIds.has(plugin.id))
-  const selectedPresets = requestedIds.size === 0
-    ? presets
-    : presets.filter(plugin => requestedIds.has(plugin.id))
+  const allPlugins = PLUGIN_SETS.flatMap(set => [...set.internalPlugins, ...set.presetPlugins])
   const unknownIds = [...requestedIds].filter(id =>
-    !internal.some(plugin => plugin.id === id) && !presets.some(plugin => plugin.id === id),
+    !allPlugins.some(plugin => plugin.id === id),
   )
   if (unknownIds.length > 0)
     die(`指定了未知插件: ${unknownIds.join(', ')}`)
-  if (internal.length === 0) {
-    console.log('[prebuild] 内部插件清单为空，跳过')
-    return
+  for (const target of PLUGIN_SETS) {
+    const selectedInternal = target.internalPlugins.filter(plugin => requestedIds.size === 0 || requestedIds.has(plugin.id))
+    const selectedPresets = target.presetPlugins.filter(plugin => requestedIds.size === 0 || requestedIds.has(plugin.id))
+    console.log(`[prebuild] ${target.coreVersion}: 制备 ${selectedInternal.length} 个 internal 插件`)
+    for (const plugin of selectedInternal)
+      buildPlugin(plugin, target)
+    console.log(`[prebuild] ${target.coreVersion}: 制备 ${selectedPresets.length} 个社区预设插件`)
+    for (const plugin of selectedPresets)
+      buildPlugin(plugin, target, PRESET_BUNDLE_ROOT)
   }
-  console.log(`[prebuild] 制备 ${selectedInternal.length} 个 internal 插件: ${selectedInternal.map(p => p.id).join(', ')}`)
-  for (const plugin of selectedInternal) {
-    buildPlugin(plugin)
-  }
-  console.log(`[prebuild] 制备 ${selectedPresets.length} 个首次引导插件的版本世代产物`)
-  for (const plugin of selectedPresets)
-    buildPlugin(plugin, PRESET_BUNDLE_ROOT)
   console.log(`[prebuild] 完成 → ${BUNDLE_ROOT}, ${PRESET_BUNDLE_ROOT}`)
 }
 

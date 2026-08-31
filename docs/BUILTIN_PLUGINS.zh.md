@@ -2,7 +2,7 @@
 
 内置插件（built-in plugin）是指随安装包分发、被视作应用本身一部分的插件。它们在 `src-tauri/resources/internal-plugins.json` 中声明，由 `scripts/prebuild.ts` 在构建期拉取到 `src-tauri/resources/internal-plugins/<id>/`，随 `bundle.resources` 一并打进安装包，并在服务启动时由 `src-tauri/src/service/plugin/internal.rs` 自动安装（并自愈）。
 
-目前的内置插件：`dsh-desktop-control`、`dsh-tauri`、`dsh-tauri-ui`、`dsh-tauri-worktree`、`dsh-tauri-panel`、`dsh-tauri-panel-extension`、`dsh-tauri-session`、`dsh-tauri-rightclick`。其中 `dsh-desktop-control` 是 Host 插件，运行在独立 Harness 进程中，不进入客户端启动图；它通过认证回环协议调用 Desktop 的权威 service，并在壳退出后保留诊断和恢复能力。
+目前的内置插件：`dsh-desktop-control`、`dsh-tauri`、`dsh-tauri-ui`、`dsh-tauri-worktree`、`dsh-tauri-panel`、`dsh-tauri-panel-extension`、`dsh-tauri-session`、`dsh-tauri-rightclick`。其中 `dsh-desktop-control` 的 Host 入口运行在独立 Harness 进程中，通过认证回环协议调用 Desktop 的权威 service，并在壳退出后保留诊断和恢复能力；Client 入口进入 DSH 客户端启动图，执行真实界面动作并把可断言结果上报给 Host。
 
 ## 内置插件 vs. 普通预装插件
 

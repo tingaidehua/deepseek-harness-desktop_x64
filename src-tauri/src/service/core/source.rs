@@ -1,8 +1,8 @@
-//! 核心来源判定与「当前活动核心」入口选择。
+//! 内核来源判定与「当前活动内核」入口选择。
 //!
 //! 承载 [`CoreSource`] / [`HarnessCore`] 两个公开类型，以及
 //! [`active_source`] / [`active_dsh_binary`] / [`active_version`] 三个供服务启动
-//! 与插件操作统一取用的入口。本地核心探测见 [`super::local`]。
+//! 与插件操作统一取用的入口。本地内核探测见 [`super::local`]。
 
 use crate::config;
 use serde::Serialize;
@@ -11,13 +11,13 @@ use tauri::AppHandle;
 
 use super::local::local_core;
 
-/// 核心来源
+/// 内核来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CoreSource {
-    /// 用户通过 CLI 安装的本地核心
+    /// 用户通过 CLI 安装的本地内核
     Local,
-    /// 桌面端预打包核心
+    /// 桌面端预打包内核
     App,
 }
 
@@ -38,7 +38,7 @@ impl CoreSource {
     }
 }
 
-/// 核心列表项（序列化 camelCase 给前端）
+/// 内核列表项（序列化 camelCase 给前端）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessCore {
@@ -49,18 +49,18 @@ pub struct HarnessCore {
     pub version: String,
     /// 完整 release tag（如 `dsh-0.1.0-rc.8-32331963388`；local 行为空串）
     pub tag: String,
-    /// 核心入口（cli path）：本地核心为 bin.js 绝对路径，预打包为安装目录
+    /// 内核入口（cli path）：本地内核为 bin.js 绝对路径，预打包为安装目录
     pub path: String,
-    /// 「打开目录」入口：本地核心为包目录，预打包为安装/槽位目录；未下载为空
+    /// 「打开目录」入口：本地内核为包目录，预打包为安装/槽位目录；未下载为空
     pub dir: String,
     /// 本地是否可用（文件在盘/可解析）
     pub present: bool,
-    /// 当前是否使用中的核心
+    /// 当前是否使用中的内核
     pub active: bool,
     pub error: Option<String>,
 }
 
-/// 当前活动核心来源（需求 3：本地核心存在时优先，除非用户显式选择预打包）。
+/// 当前活动内核来源（需求 3：本地内核存在时优先，除非用户显式选择预打包）。
 pub fn active_source(app_handle: &AppHandle) -> CoreSource {
     let setting = config::get_store_dat_setting(app_handle);
     let local_present = local_core(app_handle).is_some();
@@ -79,10 +79,10 @@ pub fn active_source(app_handle: &AppHandle) -> CoreSource {
     }
 }
 
-/// 当前活动核心的 dsh 入口（bin.js 绝对路径）。
+/// 当前活动内核的 dsh 入口（bin.js 绝对路径）。
 ///
 /// 供服务启动（workflow::launch）与插件操作（plugin::install 等）统一取用，
-/// 本地核心解析在调用瞬间失效时回退预打包入口。
+/// 本地内核解析在调用瞬间失效时回退预打包入口。
 pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle)
@@ -92,8 +92,8 @@ pub fn active_dsh_binary(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
-/// 当前活动核心的包根目录。插件兼容检查与 CLI 子进程 cwd 必须和入口来自同一
-/// 核心，不能在选择本地核心后继续读取 Desktop 预打包槽位。
+/// 当前活动内核的包根目录。插件兼容检查与 CLI 子进程 cwd 必须和入口来自同一
+/// 内核，不能在选择本地内核后继续读取 Desktop 预打包槽位。
 pub fn active_core_dir(app_handle: &AppHandle) -> PathBuf {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle)
@@ -103,7 +103,7 @@ pub fn active_core_dir(app_handle: &AppHandle) -> PathBuf {
     }
 }
 
-/// 当前活动核心的版本号（`--no-open` 等按版本判定的能力以它为准）。
+/// 当前活动内核的版本号（`--no-open` 等按版本判定的能力以它为准）。
 pub fn active_version(app_handle: &AppHandle) -> Option<String> {
     match active_source(app_handle) {
         CoreSource::Local => local_core(app_handle).map(|c| c.version),

@@ -347,7 +347,7 @@ fn on_owned_process_exit(pid: u32) -> Option<OwnedProcess> {
 /// 程序，因此可安全地全部结束（taskkill /T /F）。
 pub fn terminate_stale_harness_processes(app_handle: &tauri::AppHandle) {
     // 开发（debug）构建不做按路径清扫：生产与开发共用同一个 `dependencies/dsh`
-    // 安装目录（核心共用），按命令行路径匹配会把同时运行的 release 服务进程
+    // 安装目录（内核共用），按命令行路径匹配会把同时运行的 release 服务进程
     // 一并结束——`pnpm tauri dev` 每次后端重编译都会重启应用并触发清扫，导致
     // "release 版 DSH 被 dev 版热更新杀掉"。开发构建自身的崩溃残留仍由
     // `.harness.pid` 标记（位于独立数据目录 `.dsh.dev`，PID+端口双重确认）
@@ -706,7 +706,7 @@ fn relaunch_via_shell_escape(app_handle: &tauri::AppHandle) {
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    // 活动核心的入口：本地核心存在时优先本地（需求 3），否则预打包
+    // 活动内核的入口：本地内核存在时优先本地（需求 3），否则预打包
     let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     if !setting.installed {
@@ -725,7 +725,7 @@ pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
         setting.installed = false;
         config::set_store_dat_setting(&app_handle, setting)?;
         // 状态变更需要 info 级落盘：这是「store 显示未安装」的源头之一
-        // （核心文件短暂缺失被复位），自更新后自动重开走进安装分支多由此触发。
+        // （内核文件短暂缺失被复位），自更新后自动重开走进安装分支多由此触发。
         log::info!("Runtime files missing (node/dsh), resetting installed flag");
         return Ok(());
     }
@@ -769,7 +769,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     let launch_started = Instant::now();
     let mut setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    // 活动核心的 dsh 入口（本地核心优先，未检测到走预打包）
+    // 活动内核的 dsh 入口（本地内核优先，未检测到走预打包）
     let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     log::debug!("Checking Node.js path: {:?}", node_binary_path);
@@ -864,7 +864,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Err(e) = crate::service::plugin::ensure_profile_npmrc(&app_handle) {
         log::warn!("ensure profile .npmrc failed: {e}");
     }
-    // 核心选择只决定协议世代；Desktop 管理插件必须在启动前投影为该世代的
+    // 内核选择只决定协议世代；Desktop 管理插件必须在启动前投影为该世代的
     // 离线产物。失败时中止本次启动，不能让 Loader 载入混合依赖。
     let phase_started = Instant::now();
     crate::service::plugin::rebind_for_active_core(&app_handle).await?;
@@ -872,8 +872,8 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
         "STARTUP_PHASE plugin_projection duration_ms={}",
         phase_started.elapsed().as_millis()
     );
-    // profile 只声明 bundle 与额外插件；DSH 制品自带的核心包必须由当前激活
-    // `dependencies/dsh` 提供。切换版本后若保留旧的 profile-local 核心包，会把
+    // profile 只声明 bundle 与额外插件；DSH 制品自带的内核包必须由当前激活
+    // `dependencies/dsh` 提供。切换版本后若保留旧的 profile-local 内核包，会把
     // 旧 React 模块表与新后端插件混装。先移除这些重复依赖并让 pnpm 清理旧产物。
     let phase_started = Instant::now();
     if let Err(e) = crate::service::plugin::reconcile_shipped_dependencies(&app_handle).await {
@@ -1070,7 +1070,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             cmd.args(&launch_args);
             cmd.envs(&envs)
                 .current_dir(config::get_dsh_install_path(&app_handle))
-                // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
+                // 内核修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
                 // 使用管道捕获输出，以便在子线程中读取
                 .stdout(Stdio::piped())
@@ -1260,7 +1260,7 @@ pub async fn install(
         // 下载 URL 对 dsh 也是完全确定可算的（DSH_CORE_URL + 平台文件名），
         // 无需依赖 GitHub API 元数据；api.github.com 限流/被代理拦截时
         // （mac 首次启动常见）仍能拿到真实下载地址，避免整次安装被瞬时失败卡死。
-        // dsh 核心默认先走 GitHub 官方直连，失败自动切换 ghfast.top 镜像兜底
+        // dsh 内核默认先走 GitHub 官方直连，失败自动切换 ghfast.top 镜像兜底
         // （下载层会在界面上告知用户）；其余任务保持单一官方源。
         if index == 1 && dsh_latest.is_none() {
             dsh_latest = Some(download::fetch_latest_dsh_pkg_info().await?);

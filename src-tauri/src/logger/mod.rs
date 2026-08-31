@@ -349,6 +349,32 @@ impl FrontendLevel {
 }
 
 pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
+    log_frontend_batch(&[(level, target, message)]);
+}
+
+/// 批量写入前端日志。一个前端刷新周期只获取一次文件锁并执行一次 flush，避免
+/// 高频 console 输出为每一行产生一次磁盘同步。
+pub fn log_frontend_batch(entries: &[(FrontendLevel, &str, &str)]) {
+    let mut file_buffer = Vec::new();
+    for (level, target, message) in entries {
+        append_frontend_entry(*level, target, message, &mut file_buffer);
+    }
+    if file_buffer.is_empty() {
+        return;
+    }
+    if let Some(w) = FRONTDESK_WRITER.get() {
+        if let Ok(g) = w.lock() {
+            let _ = g.append_bytes(&file_buffer);
+        }
+    }
+}
+
+fn append_frontend_entry(
+    level: FrontendLevel,
+    target: &str,
+    message: &str,
+    file_buffer: &mut Vec<u8>,
+) {
     // 前端日志独立落盘到 `desktop.frontdesk.log`，与后端 `desktop.log`（含 `dsh` target）分离；
     // 文件层已跳过 `frontend` target（见 init），此处经 `log` 代理仅为 `pnpm tauri dev` 终端可见
     // 标识与 `dsh` 对称：`frontend` 作为 target 出现在 LEVEL 之后（`... INFO frontend: [tag] message`）
@@ -393,12 +419,7 @@ pub fn log_frontend(level: FrontendLevel, target: &str, message: &str) {
             )
         }
     };
-    let bytes = formatted.as_bytes();
-    if let Some(w) = FRONTDESK_WRITER.get() {
-        if let Ok(g) = w.lock() {
-            let _ = g.append_bytes(bytes);
-        }
-    }
+    file_buffer.extend_from_slice(formatted.as_bytes());
 }
 
 #[cfg(test)]
@@ -429,5 +450,16 @@ mod tests {
             FrontendLevel::from_str("unknown"),
             FrontendLevel::Info
         ));
+    }
+
+    #[test]
+    fn frontend_batch_formats_every_entry() {
+        let mut bytes = Vec::new();
+        append_frontend_entry(FrontendLevel::Info, "one", "first", &mut bytes);
+        append_frontend_entry(FrontendLevel::Error, "two", "second", &mut bytes);
+        let text = String::from_utf8(bytes).unwrap();
+        assert_eq!(text.lines().count(), 2);
+        assert!(text.contains("frontend: [one] first"));
+        assert!(text.contains("frontend: [two] second"));
     }
 }

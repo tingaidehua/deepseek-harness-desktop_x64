@@ -10,6 +10,32 @@ pub fn get_diagnostics_snapshot(app_handle: AppHandle) -> Result<DiagnosticsSnap
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ShellDiagnosticPayload {
+    stage: String,
+    href: String,
+    resource: String,
+    message: String,
+    root_child_count: usize,
+}
+
+/// 持久化不依赖 React 入口的顶层壳加载事件。
+#[tauri::command]
+pub fn report_shell_diagnostics(
+    app_handle: AppHandle,
+    payload: ShellDiagnosticPayload,
+) -> Result<crate::diagnostics::ShellRuntimeDiagnostic, String> {
+    crate::diagnostics::record_shell_runtime_event(
+        &app_handle,
+        &payload.stage,
+        &payload.href,
+        &payload.resource,
+        &payload.message,
+        payload.root_child_count,
+    )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FrameReadinessPayload {
     state: String,
     href: String,

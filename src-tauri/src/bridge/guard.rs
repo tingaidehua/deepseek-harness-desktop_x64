@@ -5,7 +5,7 @@
 //! 若不加约束，任意 frame 都能驱动宿主打开任意目录/文件（例如把恶意网页路径
 //! 交给系统默认处理器）。本模块把这两条命令限制在**预期根目录集合**内：
 //! - 系统下载目录（Session 日志下载完成的「在文件夹中显示」）；
-//! - 应用数据目录（核心版本「打开目录」、历史核心槽位、updates 安装包）；
+//! - 应用数据目录（内核版本「打开目录」、历史内核槽位、updates 安装包）；
 //! - 官方 `$DSH_HOME`（用户数据目录，部分入口也指向它）。
 //!
 //! 实现用 canonicalize 后做前缀匹配，避免字符串前缀误判与符号链接跳出。
@@ -25,8 +25,8 @@ pub fn allowed_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
     }
     let dsh_home = crate::config::get_dsh_data_path(app_handle);
     roots.push(dsh_home);
-    // 本地核心（用户通过 CLI 安装）的包目录：由后端检测得到的可信路径，
-    // 允许「核心」面板的「打开目录」打开它（否则会因不在任何允许根内被拒）。
+    // 本地内核（用户通过 CLI 安装）的包目录：由后端检测得到的可信路径，
+    // 允许「内核」面板的「打开目录」打开它（否则会因不在任何允许根内被拒）。
     if let Some(dir) = crate::service::core::local_core_package_dir(app_handle) {
         roots.push(dir);
     }

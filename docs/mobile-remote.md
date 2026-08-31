@@ -32,7 +32,7 @@
 
 ### 2.2 桌面原生桥（dataelement/dsh-desktop，参考实现）
 
-核心文件：
+内核文件：
 
 - `src/main/mobile/lan-mobile-bridge.ts`（942 行）：`LanMobileBridge` 类。
 - `src/main/mobile/cloudflared-tunnel.ts`（229 行）：cloudflared 下载/校验 + Quick Tunnel spawn。
@@ -215,7 +215,7 @@ flowchart LR
   2. 侧车 `node_modules`（qrcode）随包安装，还是 Rust 生成二维码？
   3. 桌面审批页：独立 Tauri 窗口，还是主窗口内嵌 iframe/弹窗？
   4. 是否需要局域网直连？还是仅隧道即可（可大幅缩小实现面）？
-  5. 侧车脚本与 cloudflared 是否随 DSH 核心更新，还是独立版本管理？
+  5. 侧车脚本与 cloudflared 是否随 DSH 内核更新，还是独立版本管理？
 
 ## 10. 相关参考文件
 

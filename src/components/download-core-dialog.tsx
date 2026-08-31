@@ -10,7 +10,7 @@ import { If } from 'react-if-lite'
 import { PanelProgress } from './panel-progress'
 
 /**
- * 核心版本下载对话框：复用首次安装（setup）的 `install-progress` 事件流，
+ * 内核版本下载对话框：复用首次安装（setup）的 `install-progress` 事件流，
  * 以进度条 + 日志面板展示下载/解压过程；成功自动关闭，失败展示错误与日志。
  *
  * 用法（overlastic holder）：
@@ -26,7 +26,7 @@ export interface DownloadCoreDialogProps extends PropsWithOverlays {
   tag: string
   /** 展示用版本号 */
   version: string
-  /** 实际下载动作（返回下载后的核心行；成功与否决定对话框如何关闭） */
+  /** 实际下载动作（返回下载后的内核行；成功与否决定对话框如何关闭） */
   runDownload: (tag: string) => Promise<HarnessCore>
 }
 

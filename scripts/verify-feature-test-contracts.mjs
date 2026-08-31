@@ -30,8 +30,27 @@ const staleCommands = declared.filter(command => !registered.includes(command))
 const implementedOperations = [...control.matchAll(/id:\s*"([a-z.]+)"/g)].map(match => match[1])
 const declaredOperations = [...new Set(contracts.features.flatMap(feature => feature.controlOperations))]
 const missingOperations = declaredOperations.filter(operation => !implementedOperations.includes(operation))
+const assertions = contracts.features.flatMap(feature => (feature.behaviorAssertions ?? [])
+  .map(assertion => ({ ...assertion, feature: feature.id })))
+const duplicateAssertions = assertions.filter((assertion, index) =>
+  assertions.findIndex(candidate => candidate.id === assertion.id) !== index)
+const missingBehaviorCoverage = contracts.features.filter(feature =>
+  !Array.isArray(feature.behaviorAssertions) || feature.behaviorAssertions.length === 0)
 
-if (contracts.protocol !== 'desktop-feature-test-contract-v1')
+for (const assertion of assertions) {
+  let source
+  try {
+    source = readFileSync(resolve(root, assertion.source), 'utf8')
+  }
+  catch {
+    fail(`行为断言 ${assertion.id} 的来源不存在: ${assertion.source}`)
+    continue
+  }
+  if (!source.includes(assertion.contains))
+    fail(`行为断言 ${assertion.id} 已失效: ${assertion.source} 缺少 ${JSON.stringify(assertion.contains)}`)
+}
+
+if (contracts.protocol !== 'desktop-feature-test-contract-v2')
   fail(`未知规约版本 ${JSON.stringify(contracts.protocol)}`)
 if (duplicateCommands.length > 0)
   fail(`command 重复归属: ${[...new Set(duplicateCommands)].join(', ')}`)
@@ -41,5 +60,9 @@ if (staleCommands.length > 0)
   fail(`已删除 command 仍残留在测试接口规约: ${staleCommands.join(', ')}`)
 if (missingOperations.length > 0)
   fail(`规约引用了不存在的控制操作: ${missingOperations.join(', ')}`)
+if (missingBehaviorCoverage.length > 0)
+  fail(`功能域缺少机器行为断言: ${missingBehaviorCoverage.map(feature => feature.id).join(', ')}`)
+if (duplicateAssertions.length > 0)
+  fail(`行为断言 id 重复: ${[...new Set(duplicateAssertions.map(assertion => assertion.id))].join(', ')}`)
 if (process.exitCode === undefined)
-  console.log(`[feature-test-contract] ${registered.length} 个 command、${implementedOperations.length} 个外部控制操作已覆盖`)
+  console.log(`[feature-test-contract] ${registered.length} 个 command、${implementedOperations.length} 个外部控制操作、${assertions.length} 个机器行为断言已覆盖`)

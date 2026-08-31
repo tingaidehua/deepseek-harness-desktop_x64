@@ -5,7 +5,7 @@ const LOG_LIMIT = 5
 /**
  * 安装/下载进度面板：进度条 + 日志面板。
  *
- * 从 Loadable 中拆出，供首次安装（setup）与核心版本下载对话框共用：
+ * 从 Loadable 中拆出，供首次安装（setup）与内核版本下载对话框共用：
  * 两处都要展示 `install-progress` 事件驱动的百分比与日志流。
  */
 export interface PanelProgressProps {

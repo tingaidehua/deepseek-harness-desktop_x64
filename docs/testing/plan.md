@@ -1,7 +1,7 @@
 # 测试计划（DeepSeek Harness 桌面版）
 
 > 目标产品：DeepSeek Harness 桌面版（Tauri 2 外壳 + React 18 前端 + Rust 后端）
-> 测试范围：全部核心功能
+> 测试范围：全部内核功能
 > 生成方式：基于等价类划分与边界值分析（见 `testcase-generator` skill），并融合 ISTQB 测试生命周期与 ISO 25010 质量模型（见 `quality-report.md`）
 > 输出目录：`docs/test-case/`
 > 配套文档：`checklist.md`（测试任务清单与质量门禁）、`quality-report.md`（质量报告与 ISO 25010）、`all_cases.md`（全部用例汇总）
@@ -10,10 +10,10 @@
 
 ## 一、产品概述
 
-桌面端一键运行 DeepSeek Harness（`dsh`）：首次启动自动装配内置 Node 运行时与 Harness 内核，无需用户安装 Node/pnpm/Docker；通过 Tauri 2 在 `127.0.0.1` 本地端口提供服务；包含核心多版本管理、档案隔离、插件管理、应用配置中心、命令行集成（`dsh` shim + PATH）、首次启动引导与桌面端自更新。纯本地运行、默认关闭遥测，中英双语界面、支持暗色模式。
+桌面端一键运行 DeepSeek Harness（`dsh`）：首次启动自动装配内置 Node 运行时与 Harness 内核，无需用户安装 Node/pnpm/Docker；通过 Tauri 2 在 `127.0.0.1` 本地端口提供服务；包含内核多版本管理、档案隔离、插件管理、应用配置中心、命令行集成（`dsh` shim + PATH）、首次启动引导与桌面端自更新。纯本地运行、默认关闭遥测，中英双语界面、支持暗色模式。
 
 - **端口隔离**：release 默认 `3080`，debug（`pnpm tauri dev` / `cargo build`）默认 `3081`，由 `config::setting::default_port()` 用 `cfg!(debug_assertions)` 区分，避免开发时与已运行的桌面端争用端口。
-- **数据隔离（核心共用、数据不共用）**：node/`dependencies/dsh`/`dependencies/pnpm` 为共用核心（AppData）；`$DSH_HOME` 默认 `~/.dsh`（release）/`~/.dsh.dev`（debug），store 文件 `.store.dat`/`.store.dev.dat`；debug 不迁移旧数据、不注册/注销 PATH、不写烘焙 DSH_HOME 的 `dsh` shim。
+- **数据隔离（内核共用、数据不共用）**：node/`dependencies/dsh`/`dependencies/pnpm` 为共用内核（AppData）；`$DSH_HOME` 默认 `~/.dsh`（release）/`~/.dsh.dev`（debug），store 文件 `.store.dat`/`.store.dev.dat`；debug 不迁移旧数据、不注册/注销 PATH、不写烘焙 DSH_HOME 的 `dsh` shim。
 - **Windows 极简模式**：预装插件流程为 Windows 用户列出「修复」项（`dsh-win-terminal-inspector`），确认后 `dsh plugin add github:clearkurt/dsh-win-terminal-inspector` 安装；随后写入 profile `cordis.patch.yml` 挂载行并生成基于 Git Bash + danger-full-access 的用户 preset。
 
 ## 二、测试范围与质量目标
@@ -22,8 +22,8 @@
 
 | 维度 | 范围 | 对应代码 |
 | --- | --- | --- |
-| 后端（Rust/Tauri） | 配置、下载/安装、核心多版本管理、档案管理、插件管理、CLI shim 与 PATH、自更新、进程生命周期、健康检查、Tauri 命令桥、桌面窗口集成、日志 | `src-tauri/src/**` |
-| 前端（React） | 安装状态机、下载进度、内嵌 iframe、侧边栏控制、配置对话框（调试/档案/插件/核心）、更新对话框、插件恢复、i18n、主题、store 状态管理 | `src/**` |
+| 后端（Rust/Tauri） | 配置、下载/安装、内核多版本管理、档案管理、插件管理、CLI shim 与 PATH、自更新、进程生命周期、健康检查、Tauri 命令桥、桌面窗口集成、日志 | `src-tauri/src/**` |
+| 前端（React） | 安装状态机、下载进度、内嵌 iframe、侧边栏控制、配置对话框（调试/档案/插件/内核）、更新对话框、插件恢复、i18n、主题、store 状态管理 | `src/**` |
 | 跨层集成 | 前端 `invoke` 命令 + 事件 ↔ 后端命令桥；WebView 内嵌 dsh UI；进程启动/停止；PATH 注册后的 CLI 可用性 | `bridge/**` + `layout/**` |
 | 资源 | 预设插件清单、内嵌 WebView、运行时/发行版产物 | `src-tauri/resources/**` |
 | 发布 | release（`:3080` / `~/.dsh`）与 debug（`:3081` / `~/.dsh.dev`）隔离，三平台安装包 | `src-tauri/**` + `dependencies/**` |
@@ -32,8 +32,8 @@
 
 | 目标 | 可测量成功标准 |
 | --- | --- |
-| 功能正确性 | 100% 验收标准被测试用例覆盖；首次装配、档案切换、核心切换、插件装卸、自更新等核心路径无失败 |
-| 稳定性 | 核心 E2E 场景通过率 ≥ 95%；无 critical / high 级缺陷进入发布 |
+| 功能正确性 | 100% 验收标准被测试用例覆盖；首次装配、档案切换、内核切换、插件装卸、自更新等内核路径无失败 |
+| 稳定性 | 内核 E2E 场景通过率 ≥ 95%；无 critical / high 级缺陷进入发布 |
 | 数据隔离 | release 与 debug 数据/端口互不污染（验证 `.store.dat` 与 `.store.dev.dat`、`~/.dsh` 与 `~/.dsh.dev`） |
 | 代码质量 | 关键路径行覆盖率 ≥ 80%、分支覆盖率 ≥ 90%；无未处理 panic |
 | 本地化 | 中英双语 key 同步，无硬编码字符串，桌面与后端文案一致 |
@@ -44,7 +44,7 @@
 ### 3.1 测试方法（Test Approach）
 
 - **分层测试**：单元 → 集成 → 端到端，由下而上；后端以 `cargo test`，前端以 Vitest，E2E 遵循 Tauri 官方推荐（`@tauri-apps/api/mocks` 的 `mockIPC`/`mockWindows` 或 WebDriver）。
-- **风险驱动**：优先覆盖装配、核心/档案切换、插件、CLI、自更新等高风险路径。
+- **风险驱动**：优先覆盖装配、内核/档案切换、插件、CLI、自更新等高风险路径。
 - **平台矩阵**：Windows / macOS / Linux；其中 Windows 额外覆盖极简模式与进程树回收。
 - **自动化优先**：单元与集成自动化，E2E 对关键路径自动化；其余采用探索性测试补足。
 - **隔离验证**：由于 release/debug 使用不同端口与数据目录，测试需分别断言两者互不影响。
@@ -58,15 +58,15 @@
 | --- | --- | --- |
 | **等价类划分** | 端口号、版本号、档案名、插件开关等输入域 | 合法/非法端口（`default_port`）、合法/非法档案名 |
 | **边界值分析** | 端口边界、下载大小、超时阈值、版本号上下限 | `3080`/`3081` 边界；超时 `0`、`1`、`MAX`；下载大小 `0`/正好/超限 |
-| **决策表测试** | 安装状态机、配置项组合（调试/档案/插件/核心）、插件修复项 | 首启装配各状态组合；`fix` 与 `recommended` 勾选组合 |
-| **状态转换测试** | 安装状态机（下载→解压→装配→就绪）；核心切换后服务重启；窗口生命周期 | 装配各状态转移；下载中断/重试；核心切换前后状态 |
+| **决策表测试** | 安装状态机、配置项组合（调试/档案/插件/内核）、插件修复项 | 首启装配各状态组合；`fix` 与 `recommended` 勾选组合 |
+| **状态转换测试** | 安装状态机（下载→解压→装配→就绪）；内核切换后服务重启；窗口生命周期 | 装配各状态转移；下载中断/重试；内核切换前后状态 |
 | **基于经验的测试** | 探索性验证：断网、磁盘满、进程被手动杀掉、端口被外部占用 | 异常路径手工探索 |
 
 ### 3.3 测试类型覆盖矩阵（Test Types Coverage Matrix）
 
 | 测试类型 | 后端 | 前端 | 覆盖重点 |
 | --- | --- | --- | --- |
-| **功能测试** | ● | ● | 装配、档案、核心、插件、CLI、更新全部功能 |
+| **功能测试** | ● | ● | 装配、档案、内核、插件、CLI、更新全部功能 |
 | **非功能测试** | ● | ● | 首次启动性能、内存占用、UI 响应、暗色/双语一致性 |
 | **结构测试** | ● | ● | 关键路径行/分支覆盖率（Rust `tarpaulin` / Vitest coverage） |
 | **变更相关测试** | ● | ● | 每次版本升级后的回归；调试/生产构建隔离回归 |
@@ -90,7 +90,7 @@
 ## 五、测试项（ITEM）与测试点（POINT）
 
 > 目录映射：`docs/test-case/<ITEM 目录>/<POINT 文件>.md`
-> 优先级：P1 核心正向 / P2 基本正向 / P3 核心异常 / P4 边界 / P5 低频
+> 优先级：P1 内核正向 / P2 基本正向 / P3 内核异常 / P4 边界 / P5 低频
 
 ### ITEM 1：安装与首次启动（目录 `01-install`，风险：高）
 
@@ -102,15 +102,15 @@
 | 4 | 首次启动预设插件引导 | 高 | 预设清单（`resources/preset-plugins.json`）；`get_preinstall_plugins`/`install_preinstall_plugins`/`skip_preinstall_plugins`/`cancel_preinstall_plugins`/`get_preinstall_pending`/`open_preinstall_repo`；指纹（preset_hash）决定重新进入引导 |
 | 5 | 安装失败与网络异常处理 | 高 | GitHub 不可达；下载/校验/解压失败；镜像兜底失败；提示与重试 |
 
-### ITEM 2：Harness 核心管理（目录 `02-core`，风险：高）
+### ITEM 2：Harness 内核管理（目录 `02-core`，风险：高）
 
 | # | 测试点（POINT） | 风险 | 输入项/关注点 |
 |---|--------------|------|--------------|
-| 1 | 核心列表展示 | 高 | `get_cores`；本地核心（local）与预打包（app/app-<tag>）；同版本 tag 去重；离线/限流时降级磁盘扫描 |
-| 2 | 激活核心切换 | 高 | `set_active_core`；local/app/app-<tag> 目录互换；切换前停服务；失败回滚 |
+| 1 | 内核列表展示 | 高 | `get_cores`；本地内核（local）与预打包（app/app-<tag>）；同版本 tag 去重；离线/限流时降级磁盘扫描 |
+| 2 | 激活内核切换 | 高 | `set_active_core`；local/app/app-<tag> 目录互换；切换前停服务；失败回滚 |
 | 3 | 历史版本下载 | 高 | `download_core`（tag）；SHA-256 摘要校验（缺失安全中止）；幂等（已下载直接返回）；两阶段进度 |
 | 4 | 历史版本卸载 | 中 | `remove_core`；激活中版本不可卸载；先停服务防句柄锁定；删除失败提示 |
-| 5 | 本地核心更新 | 中 | `update_local_core`；npm/pnpm 布局探测；`@latest` 升级；失败返回输出尾部 |
+| 5 | 本地内核更新 | 中 | `update_local_core`；npm/pnpm 布局探测；`@latest` 升级；失败返回输出尾部 |
 
 ### ITEM 3：进程生命周期与健康检查（目录 `03-lifecycle`，风险：高）
 
@@ -124,7 +124,7 @@
 
 | # | 测试点（POINT） | 风险 | 输入项/关注点 |
 |---|--------------|------|--------------|
-| 1 | 配置对话框与管理 | 中 | `get_app_config`/`update_app_config`；调试/档案/插件/核心四个分页；字段校验与保存 |
+| 1 | 配置对话框与管理 | 中 | `get_app_config`/`update_app_config`；调试/档案/插件/内核四个分页；字段校验与保存 |
 | 2 | 语言与主题 | 中 | `set_language`（zh-CN/en）；`get_dsh_theme`（light/dark/system）；界面实时切换；i18n 扁平键 |
 | 3 | 侧边栏与偏好设置 | 低 | `toggle_sidebar`；`auto_start`、`cli_link_enabled` 等开关 |
 | 4 | 设置持久化 | 中 | `setting_updated` 事件；store 键（installed/port/active_profile/active_core/cli_link_enabled/preinstall_done/preset_hash/dsh_home_migrated/dsh_pkg_tag/dsh_pkg_commit） |

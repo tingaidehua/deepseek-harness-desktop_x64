@@ -365,6 +365,20 @@ fn sync_macos_fullscreen_menu(window: &tauri::Window<Wry>) {
 /// config 声明的窗口无法挂载 on_download，而内嵌 iframe 的 dsh 页面
 /// 触发下载时 WebView2 静默保存、用户零感知，需要接管下载以给出反馈。
 pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::WebviewWindow<Wry>> {
+    if let Err(error) = crate::diagnostics::begin_shell_runtime_session(app) {
+        log::warn!("[shell] failed to begin runtime diagnostics: {error}");
+    }
+    let assets = crate::diagnostics::shell_asset_diagnostic(app);
+    log::info!(
+        "[shell] embedded assets state={} count={} checks={:?}",
+        assets.state,
+        assets.embedded_asset_count,
+        assets
+            .checks
+            .iter()
+            .map(|check| (&check.path, check.present, check.mime_type.as_deref()))
+            .collect::<Vec<_>>()
+    );
     let app_handle = app.clone();
 
     #[cfg(windows)]
@@ -455,7 +469,8 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
     // Host 所有权必须在 DSH 客户端包启动前存在；Wry 会在各平台的主文档与子 frame
     // 中把它注册为 document-created 脚本。
     let webview_builder = webview_builder
-        .initialization_script_for_all_frames(crate::desktop::host_ownership::HOST_OWNERSHIP_JS);
+        .initialization_script_for_all_frames(crate::desktop::host_ownership::HOST_OWNERSHIP_JS)
+        .initialization_script_for_all_frames(crate::desktop::shell_probe::SHELL_PROBE_JS);
 
     // 非 Windows（macOS/Linux）没有 WebView2 的 FrameCreated/ContentLoading 流程，
     // 直接用 Tauri 的 initialization_script_for_all_frames 把兼容桥、通知桥、导航桥、
@@ -578,6 +593,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::remove_profile,
         crate::bridge::get_cores,
         crate::bridge::get_diagnostics_snapshot,
+        crate::bridge::report_shell_diagnostics,
         crate::bridge::report_frame_readiness,
         crate::bridge::report_surface_diagnostics,
         crate::bridge::set_active_core,
@@ -611,6 +627,7 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::read_clipboard_image,
         crate::desktop::notification::show_native_notification,
         crate::bridge::log_frontend,
+        crate::bridge::log_frontend_batch,
     ]
 }
 

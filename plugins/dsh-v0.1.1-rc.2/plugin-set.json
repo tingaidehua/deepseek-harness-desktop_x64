@@ -1,0 +1,21 @@
+{
+  "coreVersion": "0.1.1-rc.2",
+  "artifactSet": "dsh-v0.1.1-rc.2",
+  "internalPlugins": [
+    { "id": "dsh-desktop-control", "spec": "local:plugins/dsh-v0.1.1-rc.2/dsh-desktop-control" },
+    { "id": "dsh-tauri", "spec": "dsh-tauri@0.5.2" },
+    { "id": "dsh-tauri-ui", "spec": "dsh-tauri-ui@0.5.2" },
+    { "id": "dsh-tauri-worktree", "spec": "dsh-tauri-worktree@0.5.2" },
+    { "id": "dsh-tauri-panel", "spec": "dsh-tauri-panel@0.5.2" },
+    { "id": "dsh-tauri-panel-extension", "spec": "dsh-tauri-panel-extension@0.5.2" },
+    { "id": "dsh-tauri-session", "spec": "dsh-tauri-session@0.5.3" },
+    { "id": "dsh-tauri-rightclick", "spec": "dsh-tauri-rightclick@0.5.3" }
+  ],
+  "presetPlugins": [
+    { "id": "dsh-win-terminal-inspector", "spec": "github:clearkurt/dsh-win-terminal-inspector#c8c5e5afb50a7fd04aa0db8c313eb150cb7bc5b6" },
+    { "id": "dshmarket", "spec": "dshmarket@1.36.0" },
+    { "id": "dsh-better-sidebar", "spec": "dsh-better-sidebar@0.17.1" },
+    { "id": "dsh-notification", "spec": "dsh-notification@0.1.1" }
+  ],
+  "adapter": "./artifact-adapter.mjs"
+}

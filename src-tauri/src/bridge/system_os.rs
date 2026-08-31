@@ -6,6 +6,7 @@
 
 use crate::config;
 use crate::logger;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -60,7 +61,7 @@ pub fn reveal_in_folder(app_handle: AppHandle, path: String) -> Result<(), Strin
     tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| format!("REVEAL_FAILED: {e}"))
 }
 
-/// 在系统文件管理器中打开指定目录（核心版本「打开目录」按钮；目录用 open 而非
+/// 在系统文件管理器中打开指定目录（内核版本「打开目录」按钮；目录用 open 而非
 /// reveal——reveal 是定位父目录，open 是直接打开该目录本身）。
 #[tauri::command]
 pub fn open_dir(app_handle: AppHandle, path: String) -> Result<(), String> {
@@ -158,6 +159,41 @@ pub fn log_frontend(level: String, target: String, message: String) {
     logger::log_frontend(lvl, &target, &message);
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendLogEntry {
+    level: String,
+    target: String,
+    message: String,
+}
+
+/// 批量接收前端日志，限制单批条数和单条长度，避免异常页面制造无界 IPC 或写盘负载。
+#[tauri::command]
+pub fn log_frontend_batch(entries: Vec<FrontendLogEntry>) {
+    const MAX_ENTRIES: usize = 256;
+    const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+    const MAX_BATCH_BYTES: usize = 256 * 1024;
+    let mut normalized = Vec::new();
+    let mut total_bytes = 0usize;
+    for entry in entries.into_iter().take(MAX_ENTRIES) {
+        let message = tail_bytes(&entry.message, MAX_MESSAGE_BYTES).to_string();
+        if total_bytes.saturating_add(message.len()) > MAX_BATCH_BYTES {
+            break;
+        }
+        total_bytes += message.len();
+        normalized.push((
+            logger::FrontendLevel::from_str(&entry.level),
+            entry.target.chars().take(80).collect::<String>(),
+            message,
+        ));
+    }
+    let borrowed = normalized
+        .iter()
+        .map(|(level, target, message)| (*level, target.as_str(), message.as_str()))
+        .collect::<Vec<_>>();
+    logger::log_frontend_batch(&borrowed);
+}
+
 /// 按字节上限取 `s` 的尾部，并在裁剪起点回退到 UTF-8 字符边界。
 ///
 /// 日志必然包含中文/ANSI 等多字节字符，直接用
@@ -199,63 +235,73 @@ pub async fn clear_service_logs(app_handle: AppHandle) -> Result<(), String> {
     std::fs::write(&log_path, "").map_err(|e| e.to_string())
 }
 
-/// 读取运行日志（DSH 服务日志 + 桌面端 Rust 运行日志），格式化为便于
-/// 反馈/报障复制的纯文本块：`### 环境信息`、`### 服务日志`、`### 前台日志`
-/// 与 `### 后台日志` 四段。
-///
-/// 服务日志来自 `logs/dsh-web.log`（debug 构建为 `logs/dsh-web.dev.log`）；
-/// 运行日志来自 `logs/desktop.log`（桌面端自身 `logger::init` 每次启动落盘，
-/// 见 logger/mod.rs）。前端 `console.*` 已在 logger 的文件层按 `target: "frontend"`
-/// 跳过、不会写入 `desktop.log`（见 logger/mod.rs），因此「后台日志」取的是纯后端
-/// `log::*`；仅对旧版本已落盘、尚未轮转掉的 `frontend:` 行做一次兜底剔除。据此把
-/// 「运行日志」拆成：
-/// - `### 前台日志`：取自前端独立文件 `logs/desktop.frontdesk.log`
-///   （`logger::init` 单独落盘，见 logger/mod.rs），仅含前端 `console.*`；
-/// - `### 后台日志`：取自 `logs/desktop.log`，剔除残余 `target: "frontend"` 行，
-///   仅保留后端 `log::*`。
-/// 每段取末尾最多 `MAX_LINES` 行（前端日志量大，仅取一半 `FRONTEND_MAX_LINES`），
-/// 避免粘贴内容超出 GitHub issue 长度上限。
+fn read_file_tail(path: &Path, max_bytes: usize, max_lines: usize) -> String {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = length.saturating_sub(max_bytes as u64);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity((length - start) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    let lines = content.lines().collect::<Vec<_>>();
+    lines[lines.len().saturating_sub(max_lines)..].join("\n")
+}
+
+fn redact_diagnostic_text(input: &str, roots: &[(&Path, &str)]) -> String {
+    let mut output = input.to_string();
+    let mut replacements = roots
+        .iter()
+        .filter_map(|(path, replacement)| {
+            let value = path.to_string_lossy().into_owned();
+            (!value.is_empty()).then_some((value, *replacement))
+        })
+        .collect::<Vec<_>>();
+    replacements.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    for (path, replacement) in replacements {
+        output = output.replace(&path, replacement);
+        output = output.replace(&path.replace('\\', "/"), replacement);
+    }
+    let secret = regex::Regex::new(
+        r"(?i)(authorization|cookie|api[_-]?key|access[_-]?token|control[_-]?token|token|password|secret)(\s*[:=]\s*)([^\s,;]+)",
+    )
+    .expect("static diagnostic secret regex");
+    secret.replace_all(&output, "$1$2<REDACTED>").into_owned()
+}
+
+fn log_file_summary(path: &Path, max_backups: usize) -> String {
+    let current = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let backups = (1..=max_backups)
+        .filter(|index| PathBuf::from(format!("{}.{}", path.display(), index)).is_file())
+        .count();
+    format!("currentBytes={current}; maxBytes=5242880; backups={backups}/{max_backups}")
+}
+
+/// 生成适合报障粘贴的脱敏诊断包。只读取每个有界日志文件的尾部，并附带内核、
+/// 插件、壳资源、React 挂载、frame 功能面和控制调用轨迹，页面黑屏时也可由控制面读取。
 #[tauri::command]
 pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
     const MAX_LINES: usize = 100;
-    // 前端日志量大，复制的行数减半（避免粘贴内容过长）；后端仍取满 MAX_LINES
     const FRONTEND_MAX_LINES: usize = MAX_LINES / 2;
+    const READ_BYTES: usize = 256 * 1024;
 
     let base = config::get_base_dir(&app_handle);
+    let dsh_home = config::get_dsh_data_path(&app_handle);
     let service = config::get_service_log_path(&app_handle);
     let desktop = base.join("logs").join("desktop.log");
     let frontend = base.join("logs").join("desktop.frontdesk.log");
-
-    let read_tail = |path: &std::path::Path, max_lines: usize| -> String {
-        if !path.exists() {
-            return String::new();
-        }
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        let lines: Vec<&str> = content.lines().collect();
-        let start = lines.len().saturating_sub(max_lines);
-        lines[start..].join("\n")
-    };
-
-    // 后端尾行：先剔除 `target: "frontend"` 的行，再取末尾，避免前端日志把后端日志挤没
-    let read_backend_tail = |path: &std::path::Path, max_lines: usize| -> String {
-        if !path.exists() {
-            return String::new();
-        }
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        let lines: Vec<&str> = content
-            .lines()
-            .filter(|line| !is_frontend_log_line(line))
-            .collect();
-        let start = lines.len().saturating_sub(max_lines);
-        lines[start..].join("\n")
-    };
-
-    // 环境信息：桌面端应用版本、dsh 发行版本、Node 版本与系统平台/架构，便于报障时快速定位环境差异
+    let trace = crate::service::control::trace_path(&app_handle);
+    let profile = crate::service::profile::active_profile(&app_handle);
     let dsh_version = config::get_dsh_version(&app_handle)
         .map(|v| format!("dsh: {v}\n"))
         .unwrap_or_default();
     let env_text = format!(
-        "app: {}\n{}node: {}\nos: {} ({})",
+        "app: {}\n{}node: {}\nos: {} ({})\nprofile: <ACTIVE_PROFILE>\nlogPolicy: 5 MiB current + 3 backups per stream",
         app_handle.package_info().version,
         dsh_version,
         config::get_active_node_version(),
@@ -263,17 +309,55 @@ pub async fn read_run_logs(app_handle: AppHandle) -> Result<String, String> {
         std::env::consts::ARCH,
     );
 
-    let service_text = read_tail(&service, MAX_LINES);
-    let frontend_text = read_tail(&frontend, FRONTEND_MAX_LINES);
-    let backend_text = read_backend_tail(&desktop, MAX_LINES);
+    let snapshot = crate::diagnostics::active_snapshot(&app_handle)
+        .and_then(|mut snapshot| {
+            snapshot.core_path = "<ACTIVE_CORE>".to_string();
+            snapshot.profile_path = "<ACTIVE_PROFILE_PATH>".to_string();
+            serde_json::to_string_pretty(&snapshot)
+                .map_err(|error| format!("DIAGNOSTICS_SERIALIZE: {error}"))
+        })
+        .unwrap_or_else(|error| format!("{{\"snapshotError\":{}}}", serde_json::json!(error)));
+    let user_home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    let mut roots = vec![
+        (base.as_path(), "<APP_DATA>"),
+        (dsh_home.as_path(), "<DSH_HOME>"),
+    ];
+    if let Some(user_home) = &user_home {
+        roots.push((user_home.as_path(), "<USER_HOME>"));
+    }
+    let service_text = read_file_tail(&service, READ_BYTES, MAX_LINES);
+    let frontend_text = read_file_tail(&frontend, READ_BYTES, FRONTEND_MAX_LINES);
+    let backend_text = read_file_tail(&desktop, READ_BYTES, MAX_LINES)
+        .lines()
+        .filter(|line| !is_frontend_log_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trace_text = read_file_tail(&trace, READ_BYTES, MAX_LINES);
+    let metadata = format!(
+        "service: {}\nfrontend: {}\nbackend: {}\ncontrolTrace: {}",
+        log_file_summary(&service, 3),
+        log_file_summary(&frontend, 3),
+        log_file_summary(&desktop, 3),
+        log_file_summary(&trace, 1),
+    );
 
-    Ok(format!(
-        "### 环境信息\n\n{}\n\n### 服务日志\n\n```\n{}\n```\n\n### 前台日志\n\n```\n{}\n```\n\n### 后台日志\n\n```\n{}\n```",
+    let report = redact_diagnostic_text(&format!(
+        "### 环境信息\n\n{}\n\n### 诊断快照\n\n```json\n{}\n```\n\n### 日志容量\n\n{}\n\n### 控制调用轨迹（尾部）\n\n```jsonl\n{}\n```\n\n### 服务日志（尾部）\n\n```\n{}\n```\n\n### 前台日志（尾部）\n\n```\n{}\n```\n\n### 后台日志（尾部）\n\n```\n{}\n```",
         env_text,
+        snapshot,
+        metadata,
+        trace_text.trim_end(),
         service_text.trim_end(),
         frontend_text.trim_end(),
         backend_text.trim_end()
-    ))
+    ), &roots);
+    Ok(if profile.is_empty() {
+        report
+    } else {
+        report.replace(&profile, "<ACTIVE_PROFILE>")
+    })
 }
 
 /// 判断某行是否为前端日志（`target: "frontend"`）。
@@ -305,6 +389,8 @@ mod tests {
     use super::is_frontend_log_line;
     use super::tail_bytes;
     use super::{canonical_existing_path, PathKind};
+    use super::{read_file_tail, redact_diagnostic_text};
+    use std::path::PathBuf;
 
     #[test]
     fn external_paths_must_exist_and_match_the_requested_kind() {
@@ -320,6 +406,36 @@ mod tests {
         assert!(canonical_existing_path(&root.join("missing"), PathKind::Any).is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_bundle_redacts_paths_and_secrets() {
+        let root = PathBuf::from(r"C:\Users\person\AppData\Desktop");
+        let home = PathBuf::from(r"C:\Users\person");
+        let text = r"C:\Users\person\AppData\Desktop\logs C:\Users\person\bin token=abc Authorization:Bearer-123";
+        let redacted = redact_diagnostic_text(
+            text,
+            &[
+                (root.as_path(), "<APP_DATA>"),
+                (home.as_path(), "<USER_HOME>"),
+            ],
+        );
+        assert!(redacted.contains("<APP_DATA>\\logs"));
+        assert!(redacted.contains("<USER_HOME>\\bin"));
+        assert!(!redacted.contains("person"));
+        assert!(!redacted.contains("abc"));
+        assert!(!redacted.contains("Bearer-123"));
+    }
+
+    #[test]
+    fn diagnostic_tail_is_bounded_by_lines() {
+        let path = std::env::temp_dir().join(format!(
+            "dsh-desktop-diagnostic-tail-{}.log",
+            std::process::id()
+        ));
+        std::fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+        assert_eq!(read_file_tail(&path, 1024, 2), "three\nfour");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

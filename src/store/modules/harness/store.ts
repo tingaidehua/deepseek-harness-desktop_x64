@@ -157,7 +157,7 @@ async function attachStartupDiagnostics(err: unknown): Promise<StartupError> {
 }
 
 /**
- * 桌面外壳核心业务模块：安装/启动流程、服务生命周期（启动/健康检查/重启/停止）、
+ * 桌面外壳内核业务模块：安装/启动流程、服务生命周期（启动/健康检查/重启/停止）、
  * iframe 加载状态与挂起兜底。
  *
  * 拆分说明（参考 damn-reports 的 store 组织方式）：
@@ -212,6 +212,7 @@ export const harness = defineStore({
       bootStarted = true
       void this.listenPluginRecovery()
       void this.listenInternalPhase()
+      void this.listenRuntimeReplacement()
       void this.boot()
     },
 
@@ -243,6 +244,20 @@ export const harness = defineStore({
       }
       catch (err) {
         console.error('[Harness] failed to listen internal-plugins-phase:', err)
+      }
+    },
+
+    /** 控制面切核完成后读取新认证地址，并以新 key 重建 iframe。 */
+    async listenRuntimeReplacement() {
+      try {
+        await listen('harness-runtime-replaced', () => {
+          void this.completeReadiness().catch((err) => {
+            console.error('[Harness] failed to refresh replaced runtime:', err)
+          })
+        })
+      }
+      catch (err) {
+        console.error('[Harness] failed to listen harness-runtime-replaced:', err)
       }
     },
 
@@ -315,7 +330,7 @@ export const harness = defineStore({
       void queryClient.invalidateQueries({ queryKey: ['info'] })
       void queryClient.invalidateQueries({ queryKey: ['config'] })
       void queryClient.invalidateQueries({ queryKey: ['cli_status'] })
-      // 档案/核心切换后重启：当前档案的插件列表、核心来源状态一并刷新
+      // 档案/内核切换后重启：当前档案的插件列表、内核来源状态一并刷新
       void queryClient.invalidateQueries({ queryKey: ['plugins'] })
       void queryClient.invalidateQueries({ queryKey: ['profiles'] })
       void queryClient.invalidateQueries({ queryKey: ['cores'] })

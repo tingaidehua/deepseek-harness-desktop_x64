@@ -7,6 +7,7 @@ pub mod paste;
 pub mod payload;
 pub mod plugin_boot;
 pub mod readiness;
+pub mod shell_probe;
 pub mod style;
 pub mod surface_probe;
 pub mod window;

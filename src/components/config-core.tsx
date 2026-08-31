@@ -19,16 +19,16 @@ import { PanelState } from './panel-state'
 const VISIBLE_APP_CORE_VERSIONS = new Set(['0.1.2-alpha.1', '0.1.1-rc.2'])
 
 /**
- * 「核心」面板：管理 Harness 引擎来源与多版本。
+ * 「内核」面板：管理 Harness 引擎来源与多版本。
  *
  * - 列表来自 `useDshCores`（`get_cores` 查询 + `setting_updated` 事件刷新），
  *   仅投影当前产品支持矩阵；完整发布历史和磁盘槽位仍由后端保留。
- * - 切换核心：持久化后**自动重启**服务（需求 5），重启走 harness store 的
+ * - 切换内核：持久化后**自动重启**服务（需求 5），重启走 harness store 的
  *   restart 流程（停止 → 重新启动 → 健康检查）。
  * - 下载版本：拉指定 tag 的发布资产到历史槽位（不激活），随后可切换；
  *   卸载仅允许非激活的已下载版本。
- * - 本地核心更新：通过用户包管理器 CLI（npm install -g @latest / pnpm add -g @latest）。
- * - 每行展示核心入口（cli path，超长省略号 + 限制宽度）。
+ * - 本地内核更新：通过用户包管理器 CLI（npm install -g @latest / pnpm add -g @latest）。
+ * - 每行展示内核入口（cli path，超长省略号 + 限制宽度）。
  */
 export function ConfigCore() {
   const [dialogHolder, openDialog] = useOverlay(Modal, { type: 'holder' })
@@ -37,7 +37,7 @@ export function ConfigCore() {
   const { t } = useTranslation()
   const { cores, loading, error, setActiveCore, updateLocalCore, downloadCore, removeCore, busy } = useDshCores()
 
-  /** 行内操作进行中的核心 id（该行的下载/卸载按钮显示 Spinner 并禁用重复点击） */
+  /** 行内操作进行中的内核 id（该行的下载/卸载按钮显示 Spinner 并禁用重复点击） */
   const [busyId, setBusyId] = useState<string | null>(null)
 
   // 发布历史仍由后端完整保留；产品界面只展示当前支持矩阵，并按语义版本降序。
@@ -47,7 +47,7 @@ export function ConfigCore() {
     .sort((a, b) => compareVersions(b.version, a.version))
   const localCore = cores.find(c => c.source === 'local')
 
-  // 本地核心是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地核心」。
+  // 本地内核是否有新版可更新：仅当存在更新的预打包发布时才显示「更新本地内核」。
   // 版本行按 tags 最新在前，取第一个 app 版本作为"当前最新可用版本"（本地版本
   // 已是最新时不再展示更新入口，避免"已最新仍提示更新"）。
   const localVersion = localCore?.version ?? ''
@@ -91,7 +91,7 @@ export function ConfigCore() {
         description: t('core.switch_restart_hint'),
         timeout: 10_000,
       })
-      // 需求 5：切换核心后自动重启服务；重启结束后收起提示 toast。
+      // 需求 5：切换内核后自动重启服务；重启结束后收起提示 toast。
       // 重启失败已由应用错误态呈现，这里静默吞掉以免重复弹错。
       void store.harness.restart()
         .then(() => toast.close(key))
@@ -122,7 +122,7 @@ export function ConfigCore() {
     }
   }
 
-  /** 打开核心所在目录（文件夹图标） */
+  /** 打开内核所在目录（文件夹图标） */
   async function openCoreDir(core: HarnessCore) {
     if (!core.dir || busy)
       return
@@ -281,7 +281,7 @@ export function ConfigCore() {
                       {t('core.uninstall')}
                     </Button>
                   </If>
-                  {/* 本地核心：已是最新时不显示；有新版时提供更新入口（与预打包行同栏，统一布局） */}
+                  {/* 本地内核：已是最新时不显示；有新版时提供更新入口（与预打包行同栏，统一布局） */}
                   <If cond={core.source === 'local' && core.present && hasLocalUpdate}>
                     <Button
                       size="sm"
@@ -301,7 +301,7 @@ export function ConfigCore() {
               )}
             />
           ))}
-          {/* 本地核心提示：未检测到时说明如何安装 */}
+          {/* 本地内核提示：未检测到时说明如何安装 */}
           <If cond={!localCore?.present}>
             <Empty>{t('core.local_missing_hint')}</Empty>
           </If>

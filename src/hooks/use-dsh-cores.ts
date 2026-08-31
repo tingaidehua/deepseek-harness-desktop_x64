@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect } from 'react'
 
-/** 核心来源：local = 用户 CLI 安装；app = 桌面端预打包 */
+/** 内核来源：local = 用户 CLI 安装；app = 桌面端预打包 */
 export type CoreSource = 'local' | 'app'
 
 /** Rust 侧 service::core::HarnessCore 的序列化形态（camelCase） */
@@ -15,9 +15,9 @@ export interface HarnessCore {
   version: string
   /** 完整 release tag（如 `dsh-0.1.0-rc.8-32331963388`；local 行为空串） */
   tag: string
-  /** 核心入口（cli path）：本地核心为 bin.js，预打包为安装目录 */
+  /** 内核入口（cli path）：本地内核为 bin.js，预打包为安装目录 */
   path: string
-  /** 「打开目录」入口：本地核心为包目录，预打包为安装/槽位目录；未下载为空 */
+  /** 「打开目录」入口：本地内核为包目录，预打包为安装/槽位目录；未下载为空 */
   dir: string
   /** 本地是否可用（文件在盘/可解析） */
   present: boolean
@@ -30,24 +30,24 @@ export interface UseDshCoresResult {
   cores: HarnessCore[]
   loading: boolean
   error: string
-  /** 切换活动核心（id: local | app | app-<tag>；持久化；服务重启由调用方触发） */
+  /** 切换活动内核（id: local | app | app-<tag>；持久化；服务重启由调用方触发） */
   setActiveCore: (id: string) => Promise<HarnessCore>
-  /** 下载指定 tag 的预打包核心到历史槽位（不激活） */
+  /** 下载指定 tag 的预打包内核到历史槽位（不激活） */
   downloadCore: (tag: string) => Promise<HarnessCore>
   /** 卸载已下载的历史版本（激活中的版本不可卸载） */
   removeCore: (id: string) => Promise<void>
-  /** 通过用户包管理器 CLI 更新本地核心，返回更新后的版本号 */
+  /** 通过用户包管理器 CLI 更新本地内核，返回更新后的版本号 */
   updateLocalCore: () => Promise<string>
   /** 操作进行中标记 */
   busy: boolean
 }
 
 /**
- * 核心列表与操作（react-query）。
+ * 内核列表与操作（react-query）。
  *
  * 查询键 `['cores']`：`set_active_core` / `download_core` / `remove_core` 写
  * 桌面端 store（触发 `setting_updated` 事件），监听该事件一并失效重拉；本地
- * 核心被外部更新后重新打开面板即最新。
+ * 内核被外部更新后重新打开面板即最新。
  */
 export function useDshCores(): UseDshCoresResult {
   const queryClient = useQueryClient()

@@ -35,10 +35,10 @@ use super::preset::{load_presets, PreinstallPluginInfo};
 const DSH_PACKAGE_PREFIX: &str = "@deepseek-ai/dsh-";
 const CORE_RECONCILE_PENDING: &str = ".dsh-core-reconcile-pending";
 
-/// 找出 profile 中重复安装、且当前激活 DSH 已随包提供的核心依赖。
+/// 找出 profile 中重复安装、且当前激活 DSH 已随包提供的内核依赖。
 ///
 /// profile 只负责声明 bundle 与额外插件；随 DSH 制品交付的包必须从当前
-/// `dependencies/dsh` 解析。否则切换核心版本后，profile 的旧前端包仍会优先
+/// `dependencies/dsh` 解析。否则切换内核版本后，profile 的旧前端包仍会优先
 /// 进入浏览器模块表，造成新后端插件与旧 React 客户端混装。
 fn duplicated_shipped_dependencies(
     dependencies: &serde_json::Map<String, serde_json::Value>,
@@ -60,7 +60,7 @@ fn duplicated_shipped_dependencies(
 /// 启动前移除 profile 对当前 DSH 自带包的版本覆盖，并重建依赖图。
 ///
 /// 该操作保留 `dsh.profile.bundles`，因此插件组成不变；只删除重复的 npm
-/// dependency，使核心包始终来自当前激活的 `dependencies/dsh`。有改动时执行
+/// dependency，使内核包始终来自当前激活的 `dependencies/dsh`。有改动时执行
 /// `pnpm install`，确保旧包不只从清单消失，也从 profile `node_modules` 清除。
 pub(crate) async fn reconcile_shipped_dependencies(app_handle: &AppHandle) -> Result<(), String> {
     let profile = profile_dir(app_handle);

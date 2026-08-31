@@ -3,7 +3,7 @@
 DeepSeek Harness desktop (Tauri 2 + React 19), embeds the Harness UI served at `http://127.0.0.1:3080`.
 
 - **端口隔离**：release 默认 `3080`，debug（`pnpm tauri dev` / `cargo build`）默认 `3081`，由 `config::setting::default_port()` 用 `cfg!(debug_assertions)` 区分，避免开发时与已运行的桌面端争用端口。
-- **数据隔离（核心共用、数据不共用）**：node/`dependencies/dsh`/`dependencies/pnpm` 为共用核心（AppData）；debug 构建的 `$DSH_HOME` 默认为 `~/.dsh.dev`（`config::runtime::get_dsh_data_path` 用 `cfg!(debug_assertions)` 区分）且 store 用独立文件 `.store.dev.dat`（`config::setting::store_dat_file_name`），避免开发版与生产版会话/档案/端口状态互相污染，也防止 dev 版热重启把 release 的服务进程杀掉（`service/workflow::terminate_stale_harness_processes` 在 debug 下为 no-op，改由 `.dsh.dev/.harness.pid` 精确回收）。debug 构建不迁移旧数据（`service/migrate`）、不注册/注销 PATH、不写烘焙 DSH_HOME 的 `dsh` shim（`service/cli`）。
+- **数据隔离（内核共用、数据不共用）**：node/`dependencies/dsh`/`dependencies/pnpm` 为共用内核（AppData）；debug 构建的 `$DSH_HOME` 默认为 `~/.dsh.dev`（`config::runtime::get_dsh_data_path` 用 `cfg!(debug_assertions)` 区分）且 store 用独立文件 `.store.dev.dat`（`config::setting::store_dat_file_name`），避免开发版与生产版会话/档案/端口状态互相污染，也防止 dev 版热重启把 release 的服务进程杀掉（`service/workflow::terminate_stale_harness_processes` 在 debug 下为 no-op，改由 `.dsh.dev/.harness.pid` 精确回收）。debug 构建不迁移旧数据（`service/migrate`）、不注册/注销 PATH、不写烘焙 DSH_HOME 的 `dsh` shim（`service/cli`）。
 - **Windows 极简模式**：预装插件流程（`service/plugin`）对 Windows 用户列出「修复」项（`dsh-win-terminal-inspector`，黄色 chip 默认勾选），确认后 `dsh plugin add github:clearkurt/dsh-win-terminal-inspector` 从 GitHub 安装（桌面端**不内置**插件源码）；随后 `service/workflow/win_inspector.rs`（仅 Windows，幂等）写入 profile `cordis.patch.yml` 挂载行并创作 `$DSH_HOME/.agent-presets/minimal-win/` 用户 preset（Git Bash + danger-full-access，因为 agent preset 组成不受 profile patch 管辖）。
 
 - Prioritize using customized components from src/components, hero-ui.
@@ -214,9 +214,10 @@ export function FooComponent(props: FooProps) {
 
 ## Backend Rules (Rust / Tauri)
 
-0. **功能测试接口规约**：每次新增、修改、重命名或删除 Desktop 功能，必须在同一提交中同步更新机器可调用的测试接口、结构化断言和 `src-tauri/resources/feature-test-contracts.json`。功能验证不得只依赖人工点击或 computer-use；外部控制面必须输出可关联的 trace id、耗时、失败码和持久化日志。运行 `pnpm verify:feature-tests` 拒绝未登记或已删除但仍残留的 Tauri command。控制面只调用权威 service，不复制业务逻辑；有副作用的操作必须显式列入白名单。Desktop 崩溃后，独立 DSH 进程及其 `dsh-desktop-control` 内置插件必须仍能读取轨迹并恢复外壳。
-   单例、启动、退出、恢复和核心切换等生命周期变更还必须提供并发或重复调用压测；测试不得通过启动 debug/release 双实例规避单例锁。
+0. **功能测试接口规约**：每次新增、修改、重命名或删除 Desktop 功能，必须在同一提交中同步更新机器可调用的测试接口、成功与失败路径的结构化断言，以及 `src-tauri/resources/feature-test-contracts.json`。每个功能域至少登记一个由仓库测试或真实运行矩阵执行的 `behaviorAssertions`；只登记 Tauri command 不算覆盖。状态变更必须断言操作前后权威 ID 或集合，并在可逆时执行回滚；内核切换必须验证正向和反向往返。功能验证不得只依赖人工点击或 computer-use；外部控制面必须输出可关联的 trace id、耗时、失败码和持久化日志。运行 `pnpm verify:feature-tests` 拒绝未登记或已删除的 command、控制操作和失效行为断言。控制面只调用权威 service，不复制业务逻辑；有副作用的操作必须显式列入白名单。Desktop 崩溃后，独立 DSH 进程及其 `dsh-desktop-control` 内置插件必须仍能读取轨迹并恢复外壳。
+   单例、启动、退出、恢复和内核切换等生命周期变更还必须提供并发或重复调用压测；测试不得通过启动 debug/release 双实例规避单例锁。
    多版本功能必须同时验证正向运行状态和反向集合不变量：活动版本恰好出现一次、活动版本存在于可见集合、所有保留版本仍可发现，并完成声明顺序的双向切换。
+   发布壳验收必须停止 Harness 并等待 Desktop PID 消失后再启动下一轮；复用热 Harness、只等待 React 挂载或只读取旧诊断文件不能称为冷启动通过。每轮必须断言端点与诊断 PID、精确内核兼容记录、运行时健康、WebView 路由和功能面报告都属于当前进程。内核、档案等运行时选择指针必须原子发布，并用并发读写测试拒绝缺失、空值和截断值。
 1. **Comments**: Chinese only; `//!` for module headers, `///` for functions (focus on "why").
 2. **Errors/Logs**: `Result<_, String>` errors need an uppercase prefix (e.g. `NODE_NOT_FOUND: ...`); log key paths.
 3. **Settings**: new `Setting` fields need `#[serde(default...)]` and export in `config/mod.rs`.
@@ -236,7 +237,7 @@ export function FooComponent(props: FooProps) {
 ## Pitfalls
 
 - `dsh` CLI is a Node script (`dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`); CLI integration is **shim + PATH**. pnpm is also JS (`dependencies/pnpm/bin/pnpm.cjs`, npm tarball).
-- AppData layout（核心共用）：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`.store.dat` / `.store.dev.dat`（后者为 debug）；服务日志 `logs/dsh-web.log`（debug 为 `logs/dsh-web.dev.log`）；`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
+- AppData layout（内核共用）：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`.store.dat` / `.store.dev.dat`（后者为 debug）；服务日志 `logs/dsh-web.log`（debug 为 `logs/dsh-web.dev.log`）；`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
 - Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; `cli::ensure` runs after install.
 
 ## Summary

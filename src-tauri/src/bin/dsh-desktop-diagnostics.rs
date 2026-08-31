@@ -25,8 +25,7 @@ fn main() {
         || PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(".dsh"),
         PathBuf::from,
     );
-    let profile =
-        argument(&args, "--profile").unwrap_or_else(|| "product-zlzhg".to_string());
+    let profile = argument(&args, "--profile").unwrap_or_else(|| "product-zlzhg".to_string());
     let snapshot = match (argument(&args, "--core"), argument(&args, "--profile-path")) {
         (Some(core), Some(profile)) => {
             main::diagnostics::snapshot_for_paths(&PathBuf::from(core), &PathBuf::from(profile))

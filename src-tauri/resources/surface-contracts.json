@@ -1,6 +1,6 @@
 {
   "coreVersions": ["0.1.2-alpha.1", "0.1.1-rc.2"],
-  "coreRoundTrip": ["0.1.1-rc.2", "0.1.2-alpha.1"],
+  "coreRoundTrip": ["0.1.2-alpha.1", "0.1.1-rc.2", "0.1.2-alpha.1"],
   "plugins": [
     "dsh-better-sidebar",
     "dsh-notification",
@@ -47,5 +47,11 @@
     "localLabels": ["本地", "Local"],
     "worktreeLabels": ["工作树", "Worktree"],
     "statusPath": "/api/dsh-worktree/status"
+  },
+  "sessionBehavior": {
+    "newSessionLabels": ["新会话", "New session"],
+    "archiveLabels": ["归档会话", "Archive session"],
+    "archivedPath": "/api/dsh-session/archived",
+    "unarchivePath": "/api/dsh-session/unarchive"
   }
 }

@@ -6,6 +6,7 @@ import { config as loadDotenv } from 'dotenv'
 import { join, resolve } from 'pathe'
 import { x } from 'tinyexec'
 import { detectLocale, translate } from './predev.i18n'
+import { healTauriAssetCache } from './tauri-asset-cache'
 
 // ==========================================
 // 1. 配置与初始化
@@ -29,7 +30,7 @@ const langArg = rawArgs.find(arg => arg.startsWith('--lang='))?.slice(7)
 let locale = detectLocale(langArg)
 
 // ==========================================
-// 2. 核心函数 (仅保留 2 个)
+// 2. 内核函数 (仅保留 2 个)
 // ==========================================
 
 /**
@@ -126,6 +127,10 @@ const command = defineCommand({
     if (isDev) {
       await ensureInternalPlugins(args.yes === true)
     }
+
+    const healedAssets = healTauriAssetCache(join(REPO_ROOT, 'src-tauri', 'target'))
+    if (healedAssets.length > 0)
+      consola.warn(`[tauri-assets] 已删除 ${healedAssets.length} 个损坏的 Brotli 缓存，当前构建将自动重建`)
 
     await exec('tauri', tauriArgs)
   },

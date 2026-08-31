@@ -47,7 +47,7 @@ function call(method, params = {}) {
 
 await call('Runtime.enable')
 await new Promise(resolve => setTimeout(resolve, 250))
-const context = contexts.find(item =>
+let context = contexts.find(item =>
   item.origin.startsWith('http://dsh.tauri.localhost:') || item.origin.startsWith('http://127.0.0.1:'))
 if (!context)
   throw new Error(`SURFACE_MATRIX_CONTEXT_MISSING: ${JSON.stringify(contexts)}`)
@@ -263,12 +263,13 @@ if (worktree.sessionId) {
   record(
     'worktree.status-api',
     status.status === 200 && ['local', 'worktree'].includes(status.body?.mode),
-    `status=${status.status}; mode=${status.body?.mode || 'missing'}; error=${status.body?.error || ''}`,
+    `status=${status.status}; mode=${status.body?.mode || 'missing'}; isGit=${String(status.body?.isGit)}; projectPath=${status.body?.projectPath ? 'present' : 'missing'}; error=${status.body?.error || ''}`,
   )
 }
 else {
   record('worktree.status-api', false, 'mode selector did not expose a session id')
 }
+
 for (const tab of contracts.sidebarTabs) {
   let opened = await click(tab.labels)
   if (!opened) {

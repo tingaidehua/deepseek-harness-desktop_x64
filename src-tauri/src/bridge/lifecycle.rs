@@ -74,7 +74,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
     let git_ok = config::git_runtime_ready(&app_handle);
 
     // 启动自愈捷径：记录显示未安装、但运行时文件已全部在盘。常见于桌面端自更新
-    // 安装器强杀进程，或上次启动时核心文件短暂缺失被 workflow::start 复位
+    // 安装器强杀进程，或上次启动时内核文件短暂缺失被 workflow::start 复位
     // `installed`（一旦复位，此后每次启动都会走进安装分支）。此时直接补记
     // installed 收尾：不做联网核对、绝不整包重下——联网核对可能把「记录滞后」
     // 误判为真更新，而重下整目录在 Windows 上极易破坏 node_modules（历史 issue：
@@ -96,7 +96,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
 
     // 老版本升级后 installed 仍为 true，但可能缺少新版新增的 Windows Git 依赖。
     // 其余三项均就绪时直接走本地任务跳过 + Git 补装，不查询 Harness 最新版本，
-    // 避免一次依赖自愈意外触发核心更新。
+    // 避免一次依赖自愈意外触发内核更新。
     if node_ok && dsh_files_ok && pnpm_ok && !git_ok {
         log::info!("Git dependency missing, provisioning bundled MinGit without core update check");
         workflow::status::set_status(workflow::status::Status::Installing);
@@ -166,7 +166,7 @@ pub async fn install_dependencies(app_handle: AppHandle) -> Result<bool, String>
                 }
             }
         }
-        // 核心文件缺失（首次安装或目录被清空）→ 需要安装
+        // 内核文件缺失（首次安装或目录被清空）→ 需要安装
         Ok(_) => true,
         Err(e) => {
             // 网络不可用或 GitHub API 限流时保留本地安装，不阻塞启动

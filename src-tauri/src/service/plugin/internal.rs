@@ -1,6 +1,6 @@
 //! 内置插件启动自愈：随安装包分发的内置插件（条目位于
 //! `internal-plugins.json`，产物目录 `resources/internal-plugins/<id>` 由构建期
-//! `scripts/prebuild.ts` 拉取）在服务启动前核对核心兼容性、依赖声明和真实入口。
+//! `scripts/prebuild.ts` 拉取）在服务启动前核对内核兼容性、依赖声明和真实入口。
 //! 兼容插件固化到 profile 内的内容槽位后安装；不兼容插件返回可诊断错误，不进入
 //! DSH 启动配置。
 //!
